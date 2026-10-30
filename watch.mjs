@@ -149,8 +149,12 @@ async function holdW(W, head, onlyFast) { // 兩個錢包同時跑（速戰：�
     if (t.hold) t.cost0 = t.cost;
     if (!(t.cost > 0) || t.hold) { // 免費的、或使用者說先別賣的：不自動賣，只通知（以開池後第一個價格當基準）
       st.base = t.hold ? t.cost : (st.base || v); st.notified = st.notified || [];
-      for (const x of RULE.notifyX) if (v >= st.base * x && !st.notified.includes(x)) { st.notified.push(x); await tg(`🔥 [${W.name}] ${t.hold ? '' : '免費幣 '}${t.sym} 漲到${t.hold ? "成本" : "開池價"}的 ${x} 倍！市值約 ${v.toFixed(2)}U\n${t.hold ? '你說先別賣' : '免費幣不會自動賣'}，要賣手動處理`); }
-      if (v < st.peak * (1 - RULE.drop) && st.dropWarnedPeak !== st.peak) { st.dropWarnedPeak = st.peak; await tg(`⚠️ [${W.name}] ${t.hold ? '' : '免費幣 '}${t.sym} 從最高 ${st.peak.toFixed(2)}U 回調 50%，現在約 ${v.toFixed(2)}U\n${t.hold ? "你說先別賣，不會自動賣" : "免費幣不會自動賣"}，要賣手動處理`); }
+      for (const x of RULE.notifyX) if (v >= st.base * x && !st.notified.includes(x)) { st.notified.push(x); await tg(`🔥 [${W.name}] ${t.hold ? '' : '免費幣 '}${t.sym} 漲到${t.hold ? "成本" : "開池價"}的 ${x} 倍！市值約 ${v.toFixed(2)}U\n${t.hold ? '你說先別賣，要賣在 TG 打「賣 ' + t.sym + '」' : '從最高回落 50% 會自動全賣；想先賣在 TG 打「賣 ' + t.sym + '」'}`); }
+      if (!t.hold && st.peak > 0 && v < st.peak * (1 - RULE.drop) && v >= 0.3 && (st.freeFail || 0) < 3 && Date.now() - (st.freeFailAt || 0) > 600e3) { 
+        if (await sell(t, st, bal, `免費幣從最高 ${st.peak.toFixed(2)}U 回落 50%，全部賣出（約 ${v.toFixed(2)}U）`, W)) { st.stage = 9; continue; }
+        st.freeFail = (st.freeFail || 0) + 1; st.freeFailAt = Date.now();
+      }
+      if (t.hold && v < st.peak * (1 - RULE.drop) && st.dropWarnedPeak !== st.peak) { st.dropWarnedPeak = st.peak; await tg(`⚠️ [${W.name}] ${t.hold ? '' : '免費幣 '}${t.sym} 從最高 ${st.peak.toFixed(2)}U 回調 50%，現在約 ${v.toFixed(2)}U\n${t.hold ? "你說先別賣，不會自動賣" : "免費幣不會自動賣"}，要賣手動處理`); }
       st.last = { v, at: ts() }; continue;
     }
     st.done2 = st.done2 || [];
