@@ -102,11 +102,15 @@ async function flow(t, st, from, to) { // 新錢包數、成交筆數
 }
 async function sell(t, st, amt, why, W = WALLETS[0]) {
   const qty = (Number(amt / 10n ** 14n) / 1e4).toFixed(4);
+  const bnb0 = BigInt((await rpc('eth_getBalance', [W.addr, 'latest']).catch(() => '0x0')) || '0x0');
   const r = await W.baw(['market-order', 'swap', '--binanceChainId', '56', '--fromTokenQty', qty, '--fromToken', t.addr, '--toToken', NATIVE_BNB]);
   log(`卖 ${t.sym} ${qty}: ${r.t.slice(0, 600)}`);
   if (!r.j?.success) { await tg(`⚠️ ${t.sym} 想賣但失敗（${why}）\n${(r.j?.error?.message || r.t).slice(0, 200)}\n如果是登入過期，請重新登入 AI 錢包`); return false; }
   await sleep(15000);
-  await tg(`💰 [${W.name}] 已賣出 ${t.sym}（${why}）\n數量 ${qty}\n訂單 ${r.j.data?.orderId || ''}`);
+  const bnb1 = BigInt((await rpc('eth_getBalance', [W.addr, 'latest']).catch(() => '0x0')) || '0x0');
+  const got = Number(bnb1 - bnb0) / 1e18, px = await bnbUsd().catch(() => 0), gotU = got * px; // 賣出實際換回多少（使用者想知道每筆拿回多少錢）
+  S.trades = S.trades || []; S.trades.push({ sym: t.sym, w: W.name, bnb: +got.toFixed(6), usd: +gotU.toFixed(2), cost: t.cost || 0, at: ts(), why });
+  await tg(`💰 [${W.name}] 已賣出 ${t.sym}（${why}）\n數量 ${qty}${got > 0 ? `\n換回 ${got.toFixed(5)} BNB（約 ${gotU.toFixed(2)}U）` : ''}\n訂單 ${r.j.data?.orderId || ''}`);
   return true;
 }
 
@@ -647,7 +651,11 @@ async function paidLoop() {
   let price = 0;
   for (const c of FORCE) if (!S.paid[c]) S.paid[c] = { at: Date.now(), name: '', done: {} };
   if (!S.migrated2) { S.migrated2 = 1; for (const c of Object.keys(S.seenMints || {})) { if (S.paid[c]) continue; const cd = await codeOf(c); if ((cd.includes('e38fd349') && cd.includes('68bce8cd')) || (cd.includes('725c4058') && cd.includes('94bf804d'))) { S.paid[c] = { at: Date.now(), name: '', done: {} }; log('補登付費追蹤 ' + c); } } }
-  const ents = Object.entries(S.paid).sort((a, b) => (FORCE.has(b[0]) - FORCE.has(a[0])) || ((a[1].lastTry || 0) - (b[1].lastTry || 0))).slice(0, 12); // 每輪最多看 12 個，輪流
+  // 進度 ≥40% 的（快滿的）每輪都看，不跟其他一百多個排隊；其餘輪流，每輪補到 16 個
+  const all = Object.entries(S.paid);
+  const hotP = all.filter(([c, P]) => FORCE.has(c) || (P.progress || 0) >= 0.4).filter(([c, P]) => !WALLETS.every((W) => P.done[W.name])).slice(0, 10);
+  const rest = all.filter((e) => !hotP.includes(e)).sort((a, b) => (a[1].lastTry || 0) - (b[1].lastTry || 0)).slice(0, Math.max(6, 16 - hotP.length));
+  const ents = hotP.concat(rest);
   for (const [c, P] of ents) {
     P.lastTry = Date.now(); if (WALLETS.every((W) => P.done[W.name])) { delete S.paid[c]; continue; }
     if (Date.now() - P.at > PAID.maxAgeH * 3600e3) { delete S.paid[c]; continue; }
@@ -698,7 +706,7 @@ async function paidLoop() {
         if (kind === 'replay') {
           const v = BigInt(P.replay.value || '0'); const vb = Number(v) / 1e18;
           if (!price || vb * price > PAID.maxUsd || vb * 1.005 > bal - PAID.keepBnb) continue;
-          try { await rpc('eth_call', [{ from: W.addr, to: c, data: P.replay.data, value: '0x' + v.toString(16) }, 'latest']); } catch { continue; }
+          try { await rpc('eth_call', [{ from: W.addr, to: c, data: P.replay.data, value: '0x' + v.toString(16) }, 'latest']); } catch { if (!P.replayFailLogged) { P.replayFailLogged = 1; log(`跳過 ${c}（${sym}）：進度 ${Math.round(progress * 100)}% 但照別人的方式鑄造會失敗（多半是白名單或後端簽名，只有特定錢包能打）`); } continue; }
           const r = await previewExec(W, c, P.replay.data, v, (sim) => {
             const mine = (sim?.balanceChanges || []).filter((b) => String(b.owner).toLowerCase() === W.addr);
             if (sim?.allowanceChanges?.length || sim?.authorityChanges?.length) return '有授權變化';
@@ -867,6 +875,25 @@ async function cmdBalance() {
   const lines = await Promise.all(WALLETS.map(async (W) => { const b = Number(BigInt(await rpc('eth_getBalance', [W.addr, 'latest']))) / 1e18; return `${W.name}：${b.toFixed(5)} BNB`; }));
   await tgSay('💼 錢包餘額\n' + lines.join('\n'));
 }
+async function cmdHold() {
+  const out = [];
+  for (const W of WALLETS) for (const t0 of TOKENS.concat(S.dyn || [])) {
+    if (t0.only && t0.only !== W.addr) continue;
+    const bal = big(await call(t0.addr, '0x70a08231' + wa(W.addr))); if (bal === 0n) continue;
+    const v = await valueUsd(t0, bal).catch(() => null); const line = `[${W.name}] ${t0.sym}：${v == null ? '還沒有池子' : '約 ' + v.toFixed(2) + 'U'}`;
+    if (!out.includes(line)) out.push(line);
+  }
+  await tgSay('📦 還沒賣的幣\n' + (out.length ? out.join('\n') : '沒有') + '\n（NFT 不在這裡，NFT 成交量變多會另外通知）');
+}
+async function cmdStats() {
+  const free = new Set(); let paid = 0;
+  try { for (const l of readFileSync(LOG, 'utf8').split('\n')) { if (l.includes('🛒')) paid++; if (!l.includes('已自動鑄造') || /重播0x(（| \||$)/.test(l)) continue; const m = l.match(/項目\s*([^\n（(|]+?)\s*現在開了/) || l.match(/\] (0x[a-fA-F0-9]{40}) /); if (m) free.add(m[1].toLowerCase()); } } catch {}
+  const tr = S.trades || [], by = {};
+  for (const x of tr) { const k = x.sym; by[k] = by[k] || { usd: 0, n: 0 }; by[k].usd += x.usd; by[k].n++; }
+  const px = await bnbUsd().catch(() => 0); let tot = 0; for (const W of WALLETS) tot += Number(BigInt(await rpc('eth_getBalance', [W.addr, 'latest']))) / 1e18;
+  const lines = Object.entries(by).map(([k, v]) => `${k}：賣 ${v.n} 筆，拿回約 ${v.usd.toFixed(2)}U`);
+  await tgSay(`📊 戰績\n自動打的免費項目：約 ${free.size} 個\n付費打的：${paid} 筆\n${lines.length ? '有記錄的賣出：\n' + lines.join('\n') + '\n' : ''}兩個錢包現在共 ${tot.toFixed(4)} BNB（約 ${(tot * px).toFixed(2)}U）`);
+}
 async function tgCmdLoop() {
   if (!TG) return;
   if (S.tgOff == null) { try { const r = await (await fetch(`https://api.telegram.org/bot${TG.a}/getUpdates?timeout=0`)).json(); const u = r.result || []; S.tgOff = u.length ? u[u.length - 1].update_id + 1 : 0; save(); } catch { S.tgOff = 0; } }
@@ -885,7 +912,9 @@ async function tgCmdLoop() {
         } else if ((mm = txt.match(/^(\S+?)\s*(?:出一半|賣一半|卖一半)$/i))) {
           await tgSay(`⚡ 收到，${mm[1]} 兩個錢包各賣一半中…`); cmdSell(mm[1], true).catch((e) => tgSay('⚠️ 賣出出錯：' + e.message));
         } else if (/^(餘額|余额|錢包|钱包|balance)$/i.test(txt)) { cmdBalance().catch(() => {}); }
-        else if (/^(help|指令|說明|说明)$/i.test(txt)) await tgSay('可用指令：\n賣 VARC → 兩個錢包全賣\n賣 VARC 一半 → 各賣一半\n（也可打「VARC 全出」「VARC 出一半」）\n餘額 → 看兩個錢包 BNB');
+        else if (/^(持倉|持仓|holdings?)$/i.test(txt)) { cmdHold().catch((e) => tgSay('⚠️ ' + e.message)); }
+        else if (/^(戰績|战绩|統計|统计|stats?)$/i.test(txt)) { cmdStats().catch((e) => tgSay('⚠️ ' + e.message)); }
+        else if (/^(help|指令|說明|说明)$/i.test(txt)) await tgSay('可用指令：\n賣 VARC → 兩個錢包全賣\n賣 VARC 一半 → 各賣一半\n（也可打「VARC 全出」「VARC 出一半」）\n餘額 → 看兩個錢包 BNB\n持倉 → 還沒賣的幣和現值\n戰績 → 上線以來打了多少、賣了多少');
       }
     } catch { await sleep(3000); }
   }
