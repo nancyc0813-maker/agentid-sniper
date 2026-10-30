@@ -321,7 +321,7 @@ async function checkMinted(tok, m) {
   const sampleTx = txs.find((t) => t.to && t.to.toLowerCase() === target);
   for (const W of WALLETS) {
     let ff = await findFree(W.addr, target, code);
-    if (!ff && sampleTx && sampleTx.input.length >= 10 && !sampleTx.input.toLowerCase().includes(sampleTx.from.slice(2).toLowerCase())) {
+    if (!ff && sampleTx && sampleTx.input.length >= 10 && !badSel(sampleTx.input) && !sampleTx.input.toLowerCase().includes(sampleTx.from.slice(2).toLowerCase())) {
       for (const v of NEAR_FREE) { try { await rpc('eth_call', [{ from: W.addr, to: target, data: sampleTx.input, value: '0x' + v.toString(16) }, 'latest']); const nm = '重播' + sampleTx.input.slice(0, 10); if (!CANDS.some((c) => c[0] === nm)) CANDS.push([nm, sampleTx.input]); ff = { n: nm, v }; break; } catch {} }
     }
     if (ff) minted += `[${W.name}] ` + queueMint(target, ff.n, W, ff.v) + '\n';
@@ -330,7 +330,7 @@ async function checkMinted(tok, m) {
     S.paid = S.paid || {};
     const val = sampleTx ? BigInt(sampleTx.value || '0x0') : 0n;
     const noAddr = sampleTx && !sampleTx.input.toLowerCase().includes(sampleTx.from.slice(2).toLowerCase());
-    S.paid[target] = { at: Date.now(), name, done: {}, wallets: m.to.size, ...((sampleTx?.input || '0x') === '0x' && val > 0n ? { recvValue: val.toString(), recvSeen: m.to.size } : {}), ...(noAddr && sampleTx.input !== '0x' ? { replay: { data: sampleTx.input, value: val.toString() } } : {}) };
+    S.paid[target] = { at: Date.now(), name, done: {}, wallets: m.to.size, ...((sampleTx?.input || '0x') === '0x' && val > 0n ? { recvValue: val.toString(), recvSeen: m.to.size } : {}), ...(noAddr && sampleTx.input !== '0x' && !badSel(sampleTx.input) ? { replay: { data: sampleTx.input, value: val.toString() } } : {}) };
   }
   await tg(`🔥 發現正在被鑄造的 Agent ID 項目${name ? '：' + name : ''}（3 分鐘內鑄給 ${m.to.size} 個錢包${share ? `，${Math.round(share * 100)}% 有 .ai 身份` : ''}）\n${target}\n${minted || '⚪ 不是免費的 → 已加入追蹤：進度超過 60%（或讀不到進度但很多人在打）且每個錢包 ≤20U 會自動打'}`);
 }
@@ -360,7 +360,7 @@ async function hotScan() {
     let minted = '';
     for (const W of WALLETS) {
       let ff = await findFree(W.addr, c, code);
-      if (!ff && topSel && topSel.length === 10) for (const v of NEAR_FREE) { try { await rpc('eth_call', [{ from: W.addr, to: c, data: topSel, value: '0x' + v.toString(16) }, 'latest']); CANDS.push(['熱門函式' + topSel, topSel]); ff = { n: '熱門函式' + topSel, v }; break; } catch {} }
+      if (!ff && topSel && topSel.length === 10 && !badSel(topSel)) for (const v of NEAR_FREE) { try { await rpc('eth_call', [{ from: W.addr, to: c, data: topSel, value: '0x' + v.toString(16) }, 'latest']); CANDS.push(['熱門函式' + topSel, topSel]); ff = { n: '熱門函式' + topSel, v }; break; } catch {} }
       if (ff) minted += `[${W.name}] ` + queueMint(c, ff.n, W, ff.v) + '\n';
     }
     if (!minted) {
@@ -462,15 +462,18 @@ async function proxyScan(from, to) {
 // 「幾乎免費」：有些項目要付一點防女巫手續費（像奶寶龍 0.00022 BNB），最多接受 0.001 BNB
 const NEAR_FREE = [0n, 10n ** 14n, 22n * 10n ** 13n, 3n * 10n ** 14n, 5n * 10n ** 14n, 10n ** 15n];
 async function findFree(from, c, code) {
-  for (const [n, d] of CANDS) { if (d.length < 10 || !code.includes(d.slice(2, 10))) continue; /* 空呼叫（直接轉 0 BNB）不算鑄造 */ for (const v of NEAR_FREE) { try { await rpc('eth_call', [{ from, to: c, data: d, value: '0x' + v.toString(16) }, 'latest']); return { n, v }; } catch {} } }
+  for (const [n, d] of CANDS) { if (d.length < 10 || badSel(d) || !code.includes(d.slice(2, 10))) continue; /* 空呼叫（直接轉 0 BNB）不算鑄造 */ for (const v of NEAR_FREE) { try { await rpc('eth_call', [{ from, to: c, data: d, value: '0x' + v.toString(16) }, 'latest']); return { n, v }; } catch {} } }
   return null;
 }
 // 鑄造排隊：每個錢包一條隊伍在背景跑（交易要一筆一筆送），不卡住掃描
 const MQ = new Map();
-const freeNoted = new Set();
+
+const BAD_SEL = new Set(['0xa9059cbb', '0x095ea7b3', '0x23b872dd', '0x42842e0e', '0xb88d4fde', '0xa22cb465', '0x39509351', '0xd505accf', '0xf242432a', '0x2eb2c2d6']);
+const badSel = (d) => BAD_SEL.has(String(d || '').slice(0, 10).toLowerCase());
+const freeNoted = new Map(); // 免費 mint 通知：同一個項目等兩個錢包都打完，合成一則
 function queueMint(c, fname, W, v) {
   const prev = MQ.get(W.name) || Promise.resolve();
-  const job = prev.then(() => autoMintMax(c, fname, W, v)).then(async (m) => { log(`[${W.name}] ${c} ${m.replace(/\n/g, ' | ')}`); if (m.startsWith('🤖')) { S.freeTrack = S.freeTrack || {}; S.freeTrack[c] = S.freeTrack[c] || { at: Date.now() }; } if (m.startsWith('🤖') && !freeNoted.has(c)) { freeNoted.add(c); const nm = tokStr(await call(c, '0x06fdde03')) || c.slice(0, 10); await tg(`🆓 打了免費項目：${nm}\n${c}`); } }).catch((e) => log(`[${W.name}] 鑄造失敗 ${c} ${e.message}`));
+  const job = prev.then(() => autoMintMax(c, fname, W, v)).then(async (m) => { log(`[${W.name}] ${c} ${m.replace(/\n/g, ' | ')}`); if (m.startsWith('🤖')) { S.freeTrack = S.freeTrack || {}; S.freeTrack[c] = S.freeTrack[c] || { at: Date.now() }; } if (m.startsWith('🤖')) { const first = !freeNoted.has(c); if (first) freeNoted.set(c, new Set()); freeNoted.get(c).add(W.name); if (first) setTimeout(async () => { const ok = freeNoted.get(c) || new Set(); const nm = tokStr(await call(c, '0x06fdde03')) || c.slice(0, 10); await tg(`🆓 打了免費項目：${nm}（${WALLETS.map((x) => x.name + (ok.has(x.name) ? ' ✅' : ' ❌')).join('、')}）\n${c}`).catch(() => {}); }, 60e3); } }).catch((e) => log(`[${W.name}] 鑄造失敗 ${c} ${e.message}`));
   MQ.set(W.name, job);
   return '⏳ 已排入自動鑄造（背景進行）';
 }
@@ -674,7 +677,7 @@ async function learnReplay(c) { // 學別人最近成功的鑄造：最常見的
   const head = parseInt(await rpc('eth_blockNumber', []), 16);
   const L = await rpc('eth_getLogs', [{ address: c, fromBlock: '0x' + (head - 1500).toString(16), toBlock: 'latest' }]).catch(() => []);
   const hs = [...new Set((L || []).map((l) => l.transactionHash))].slice(-40);
-  const txs = (await Promise.all(hs.map((h) => rpc('eth_getTransactionByHash', [h]).catch(() => null)))).filter((t) => t && t.to && t.to.toLowerCase() === c && t.input && t.input.length >= 10 && !t.input.toLowerCase().includes(t.from.slice(2).toLowerCase()));
+  const txs = (await Promise.all(hs.map((h) => rpc('eth_getTransactionByHash', [h]).catch(() => null)))).filter((t) => t && t.to && t.to.toLowerCase() === c && t.input && t.input.length >= 10 && !badSel(t.input) && !t.input.toLowerCase().includes(t.from.slice(2).toLowerCase()));
   if (!txs.length) return null;
   const cnt = {}; for (const t of txs) cnt[t.input.slice(0, 10)] = (cnt[t.input.slice(0, 10)] || 0) + 1;
   const sel = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0][0];
@@ -720,6 +723,7 @@ async function paidLoop() {
     let unit = 0n; // 一般 NFT：mint(數量) 付「單價 × 數量」BNB（像 Sentient Syndicate 的 PRICE）
     if (!kind && code.includes('a0712d68')) for (const sel of ['8d859f3e', 'a035b1fe', '6817c76c', '13faede6', '817b1cd2']) { if (!code.includes(sel)) continue; const r = await call(c, '0x' + sel); if (r && r.length >= 66 && BigInt(r.slice(0, 66)) > 0n) { unit = BigInt(r.slice(0, 66)); kind = 'gen'; break; } }
     if (!kind && P.recvValue) kind = 'recv';
+    if (P.replay && badSel(P.replay.data)) delete P.replay;
     if (!kind && P.replay) kind = 'replay'; // 少見的鑄造函式：照別人的呼叫內容與金額打
     
     if ((!kind || kind === 'replay') && (!P.replay || (P.replay.learned && Date.now() - (P.replay.learnedAt || 0) > 120e3))) { const lr = await learnReplay(c).catch(() => null); if (lr) { P.replay = lr; kind = 'replay'; } }
