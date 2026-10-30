@@ -625,9 +625,20 @@ async function bnbUsd() {
   if (!r || !t0) return 0; const a = BigInt(r.slice(0, 66)), b = BigInt('0x' + r.slice(66, 130)); return t0.slice(26) === WBNB.slice(2) ? Number(b) / Number(a) : Number(a) / Number(b);
 }
 const tokStr = (r) => { try { const h = r.slice(2); const len = Number(BigInt('0x' + h.slice(64, 128))); return Buffer.from(h.slice(128, 128 + len * 2), 'hex').toString('utf8'); } catch { return ''; } };
-async function fitShares(W, c, data, v) { // 份數太多被擋（每次／每個身份有上限）→ 自動降到 5、3、2、1 份再試
+async function readLimit(W, c) { 
+  const code = ((await codeOf(c)) || '').toLowerCase(); const has = (s) => code.includes(s); const num = (r) => (r && r.length >= 66 ? BigInt(r.slice(0, 66)) : null); const me = wa(W.addr); const lim = [];
+  for (const s of ['d872e413', 'b399b0bc', 'b0b5230f', '7aa9a9d8']) if (has(s)) { const x = num(await call(c, '0x' + s + me)); if (x != null && x < 1000000n) { lim.push(x); break; } }
+  let per = null; for (const s of ['453c2310', 'b228d925', '0f2cdd6c', 'f516a2e6', '3c8463a1', 'a4183dbe', '6ac8c1b7']) if (has(s)) { const x = num(await call(c, '0x' + s)); if (x != null && x > 0n && x < 1000000n) { per = x; break; } }
+  if (per == null) for (const s of ['1cee24f5', 'ef23b3a3']) if (has(s)) { const x = num(await call(c, '0x' + s + me)); if (x != null && x > 0n && x < 1000000n) { per = x; break; } }
+  if (per != null) { let mine = 0n; for (const s of ['1e7269c5', '3cef28d2', 'dc33e681', 'fddcb5ea', 'f5eb42dc', '7b622c72']) if (has(s)) { const x = num(await call(c, '0x' + s + me)); if (x != null && x < 1000000n) { mine = x; break; } } lim.push(per > mine ? per - mine : 0n); }
+  for (const s of ['f968adbe', 'f43a22dc', 'de7fcb1d']) if (has(s)) { const x = num(await call(c, '0x' + s)); if (x != null && x > 0n && x < 1000000n) { lim.push(x); break; } }
+  return lim.length ? lim.reduce((a, b) => (b < a ? b : a)) : null;
+}
+async function fitShares(W, c, data, v) { // 份數：先讀項目方開放幾份；讀不到再自動降到 5、3、2、1 份試
   const ws = data.slice(10).match(/.{64}/g) || []; if (!ws.length) return data;
-  const n0 = BigInt('0x' + ws[0]); if (n0 < 1n || n0 > 100n) return data;
+  let n0 = BigInt('0x' + ws[0]); if (n0 < 1n || n0 > 100n) return data;
+  const lim = await readLimit(W, c).catch(() => null);
+  if (lim != null) { if (lim === 0n) throw new Error('這個錢包的額度已經用完'); if (lim < n0) { log(`讀到項目方開放份數 ${lim}，照這個打：${c}`); n0 = lim; } }
   for (const n of [n0, ...[5n, 3n, 2n, 1n].filter((x) => x < n0)]) {
     const d2 = data.slice(0, 10) + w(n) + ws.slice(1).join('');
     try { await rpc('eth_call', [{ from: W.addr, to: c, data: d2, value: '0x' + BigInt(v || 0).toString(16) }, 'latest']); if (n !== n0) log(`份數降到 ${n} 份才打得了：${c}`); return d2; } catch {}
@@ -747,7 +758,7 @@ async function learnReplay(c) { // 學別人最近成功的鑄造：最常見的
   if (!txs.length) return null;
   const cnt = {}; for (const t of txs) cnt[t.input.slice(0, 10)] = (cnt[t.input.slice(0, 10)] || 0) + 1;
   const sel = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0][0];
-  const cands = txs.filter((t) => t.input.startsWith(sel)).reverse();
+  const cands = txs.filter((t) => t.input.startsWith(sel)).reverse().sort((a, b) => a.input.length - b.input.length); // 優先學最簡單的那種（別人帶了自己的 NFT 編號等額外參數的，照抄會失敗）
   for (const pick of cands.slice(0, 3)) {
     const rc = await rpc('eth_getTransactionReceipt', [pick.hash]).catch(() => null); if (!rc || rc.status !== '0x1') continue;
     let payTok = '', payAmt = '0';
@@ -770,7 +781,7 @@ async function repeatDevOk(dep, c, P) {
 const memoC = new Map(); const cc = async (to, data, ttl = 600e3) => { const k = to + data, m = memoC.get(k); if (m && Date.now() - m.t < ttl) return m.v; const v = await call(to, data); memoC.set(k, { v, t: Date.now() }); if (memoC.size > 20000) memoC.clear(); return v; }; // 不常變的合約資料快取，加快檢查
 const busyP = new Set(); // 同一個項目同時只處理一次（快速檢查和一般檢查分開跑，避免重複打）
 async function paidLoop(mode = 'all') {
-  if (S.umReset !== 2) { S.umReset = 2; for (const P of Object.values(S.paid || {})) { if (P.unmintable) { delete P.unmintable; P.fail = 0; P.cf = 0; } } } // 新版一次性：之前標記打不了的重新試
+  if (S.umReset !== 3) { S.umReset = 3; for (const P of Object.values(S.paid || {})) { if (P.unmintable) { delete P.unmintable; P.fail = 0; P.cf = 0; if (P.replay?.learned) delete P.replay; } } } // 新版一次性：之前標記打不了的重新試
   S.paid = S.paid || {}; S.dyn = S.dyn || []; S.paidSpend = S.paidSpend || {};
   const today = new Date().toDateString(); if (S.paidSpend.day !== today) S.paidSpend = { day: today };
   let price = 0;
