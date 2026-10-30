@@ -641,8 +641,11 @@ async function freshWallet(a) { // 部署者是不是大約 8 小時內才開始
   try { const head = parseInt(await rpc('eth_blockNumber', []), 16); const old = await rpc('eth_getTransactionCount', [a, '0x' + (head - 60000).toString(16)]); const now = await rpc('eth_getTransactionCount', [a, 'latest']); return parseInt(old, 16) === 0 && parseInt(now, 16) < 50; } catch { return false; }
 }
 // 重複 DEV：同一個部署者 24 小時內發 3 個以上 Agent ID 項目 → 硬性不鑄造（免費、手續費、付費全部）
-function noteDev(dep, c) { if (!dep) return; S.devs = S.devs || {}; const now = Date.now(); const arr = (S.devs[dep] || []).filter((x) => now - x.t < 86400e3 && x.c !== c); arr.push({ t: now, c }); S.devs[dep] = arr.slice(-30); if (Object.keys(S.devs).length > 5000) S.devs = {}; }
-function isRepeatDev(dep) { return !!dep && ((S.devs || {})[dep] || []).filter((x) => Date.now() - x.t < 86400e3).length >= 3; }
+function noteDev(dep, c) { if (!dep) return; S.devs = S.devs || {}; const now = Date.now(); const arr = (S.devs[dep] || []).filter((x) => now - x.t < 86400e3 && x.c !== c); arr.push({ t: now, c }); S.devs[dep] = arr.slice(-30); if (Object.keys(S.devs).length > 5000) S.devs = {};
+  (async () => { let n = tokStr(await call(c, '0x95d89b41')) || tokStr(await call(c, '0x06fdde03')); if (!n) { const tr = await call(c, '0xfc0c546a'); if (tr && tr.length >= 66 && BigInt(tr.slice(0, 66)) > 0n) n = tokStr(await call('0x' + tr.slice(26, 66), '0x95d89b41')); } const e = (S.devs[dep] || []).find((x) => x.c === c); if (e && n) e.n = n; })().catch(() => {}); }
+
+const devKey = (x) => String(x.n || S.paid?.[x.c]?.name || x.c).toLowerCase().replace(/\s*\(.*?\)\s*/g, '').replace(/^\$/, '').trim();
+function isRepeatDev(dep) { return !!dep && new Set(((S.devs || {})[dep] || []).filter((x) => Date.now() - x.t < 86400e3).map(devKey)).size >= 3; }
 function blacklist(dep, why) { if (!dep) return; S.black = S.black || {}; if (!S.black[dep]) { S.black[dep] = { at: ts(), why }; log(`黑名單：${dep}（${why}）`); } }
 
 async function paidLoop() {
@@ -680,7 +683,7 @@ async function paidLoop() {
     // 防釣魚：① 同款合約 24 小時內被部署 3 次以上（批量發盤）不打 ② 進度要是很多人打出來的（至少 20 個不同錢包），不是項目方自己刷的
     if (!forced) { const dep = await deployerOf(c); P.deployer = dep;
       if (dep && !(S.devs?.[dep] || []).some((x) => x.c === c)) noteDev(dep, c);
-      if (isRepeatDev(dep)) { if (!P.devLogged) { P.devLogged = 1; log(`跳過 ${c}：重複 DEV ${dep}（24 小時內發了 ${(S.devs[dep] || []).length} 個項目）`); } continue; }
+      if (isRepeatDev(dep) && !P.devLogged) { P.devLogged = 1; log(`注意 ${c}：重複 DEV ${dep}，但進度已過 80%，照使用者 10/30 16:05 的規則照打`); } // 使用者：就算是重複 DEV，快打完的項目還是要打
       if (dep && S.black?.[dep]) { if (!P.blackLogged) { P.blackLogged = 1; log(`跳過 ${c}：部署者 ${dep} 在黑名單（${S.black[dep].why}）`); } continue; }
       if (dep && P.fresh == null) P.fresh = await freshWallet(dep);
       if (P.fresh) { if (!P.freshLogged) { P.freshLogged = 1; log(`跳過 ${c}：部署者 ${dep} 是剛建立的新錢包`); } continue; }
