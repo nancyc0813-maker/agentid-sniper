@@ -39,7 +39,7 @@ let TG = null;
 const isFreeMintNote = (t) => /^🆓/u.test(t) || (/^🆕/u.test(t) && t.includes('🤖 已自動鑄造'));
 const important = (t) => !isFreeMintNote(t) && (/^(⏰|⚠️|🔑|💰|🔥|🚀|🦋|🏗|🛒)/u.test(t) || t.includes('不是免費')); 
 
-const sendable = (t) => /^(💰|🛒|🔑|⏰|🦋)/u.test(t) || isFreeMintNote(t) || (/^🚀/u.test(t) && (t.includes('開池') || t.includes('平台幣'))) || (/^🔥/u.test(t) && /\d+ 倍/.test(t) && !t.includes('搶打')) || (/^⚠️/u.test(t) && /(想賣但失敗|回調|回落|登入|開發者模式)/.test(t));
+const sendable = (t) => /^(💰|🛒|🔑|⏰|🦋)/u.test(t) || isFreeMintNote(t) || (/^🚀/u.test(t) && (t.includes('開池') || t.includes('平台幣'))) || (/^🔥/u.test(t) && /\d+ 倍/.test(t) && !t.includes('搶打')) || (/^⚠️/u.test(t) && /(想賣但失敗|回調|回落|登入|開發者模式|打不了)/.test(t));
 
 const GROUP_ID = CONFIG.telegram?.groupChatId || ''; // 可選：也發到 TG 群（買入、開池、倍數、賣出）
 const groupSent = new Map();
@@ -48,7 +48,7 @@ async function toGroup(text) {
   let msg = '', key = '';
   const ca = (text.match(/0x[a-fA-F0-9]{40}/) || [])[0] || '';
   
-  return;
+  if (/^🛒/u.test(text)) { const name = (text.match(/項目[：:]\s*([^\n（(|]+)/) || [])[1]?.trim() || ''; const pct = (text.match(/進度約?\s*(\d+)%/) || [])[1]; msg = `🎯 打了付费项目：${name || '新项目'}${pct ? `（铸造进度约 ${pct}%）` : ''}\n合约：${ca}`; key = 'mint:' + ca.toLowerCase(); }
   if (!msg || !ca) return;
   const now = Date.now(); if (groupSent.has(key) && now - groupSent.get(key) < 6 * 3600e3) return; groupSent.set(key, now);
   try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text: '📡 Agent ID 播报\n' + msg, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {}
@@ -314,6 +314,7 @@ async function checkMinted(tok, m) {
     share = n / sample.length; if (n < 4 || share < 0.6) return;
     gated = true;
   }
+  if (INFRA.has(target) || INFRA.has(tok)) return; // Agent ID 登記合約本身不是項目
   S.seenMints[target] = ts(); S.seenMints[tok] = ts();
   const name = tokStr(await call(tok, '0x06fdde03')) || tokStr(await call(target, '0x06fdde03'));
   // 先試常見免費函式；不行就「照別人的呼叫內容重播」（不含別人地址的才重播）
@@ -337,6 +338,7 @@ async function checkMinted(tok, m) {
 
 async function hotScan() {
   for (const [c, h] of HOT) {
+    if (INFRA.has(c)) continue;
     if ((h.from.size < 12 && (h.smart?.size || 0) < 2) || S.seenMints[c] || hotChecked.has(c)) continue;
     hotChecked.set(c, Date.now()); if (hotChecked.size > 5000) hotChecked.delete(hotChecked.keys().next().value);
     let code = ((await rpc('eth_getCode', [c, 'latest']).catch(() => '')) || '').toLowerCase();
@@ -373,6 +375,9 @@ async function hotScan() {
   }
 }
 
+const BG = []; let bgRun = 0; // 背景工作佇列（最多同時 3 個）
+function bgJob(fn) { BG.push(fn); pumpBG(); }
+function pumpBG() { while (bgRun < 3 && BG.length) { const f = BG.shift(); bgRun++; f().catch((e) => log('bg ' + e.message)).finally(() => { bgRun--; pumpBG(); }); } }
 async function scanNew(head) {
   if (!S.lastBlock) S.lastBlock = head - 5;
   if (head - S.lastBlock > 1500) { log(`掃描落後太多（${head - S.lastBlock} 塊），跳到最新`); S.lastBlock = head - 200; }
@@ -410,6 +415,7 @@ async function scanNew(head) {
         }
         if (!code.toLowerCase().includes(REGISTRY) && !code.includes('9f92d0dd')) continue;
         S.seenMints[c] = ts(); noteDeploy(code); S.deployer = S.deployer || {}; S.deployer[c] = (tx.from || '').toLowerCase(); noteDev(S.deployer[c], c);
+        bgJob(async () => {
         const ok = [];
         { const ff = await findFree(ME, c, code); if (ff) ok.push(ff.n + (ff.v > 0n ? `（付 ${Number(ff.v) / 1e18} BNB 手續費）` : '')); }
         const str = (r) => { try { const h = r.slice(2); const len = Number(BigInt('0x' + h.slice(64, 128))); return Buffer.from(h.slice(128, 128 + len * 2), 'hex').toString('utf8'); } catch { return ''; } };
@@ -423,11 +429,13 @@ async function scanNew(head) {
         for (const W of WALLETS) { const ff = await findFree(W.addr, c, code); const f = ff?.n; if (f) minted += `[${W.name}] ` + queueMint(c, f, W, ff.v) + '\n'; }
         if (!ok.length) { S.paid = S.paid || {}; S.paid[c] = { at: Date.now(), name, done: {} }; }
         await tg(`🆕 發現新的 Agent ID 專屬合約${name ? '：' + name : ''}\n${c}\n${ok.length ? '✅ 模擬免費可鑄：' + ok.join('、') + '\n' + minted : `⚪ 現在不是免費的（${pay}，或還沒開）→ 已加入追蹤：\n· 開放後若免費或手續費 ≤0.001 BNB → 自動打\n· 付費 → 進度超過 60%（或讀不到進度但很多人在打）且每個錢包 ≤20U → 自動打`}\nhttps://bscscan.com/address/${c}`);
+        }); // 背景處理新合約（模擬、鑄造、通知），掃描不用等
       } catch {}
     }
   }
-  await hotScan().catch((e) => log('hotScan ' + e.message));
-  await mintScan(done).catch((e) => log('mintScan ' + e.message));
+  
+  if (!globalThis._hsBusy) { globalThis._hsBusy = true; hotScan().catch((e) => log('hotScan ' + e.message)).finally(() => { globalThis._hsBusy = false; }); }
+  if (!globalThis._msBusy) { globalThis._msBusy = true; mintScan(done).catch((e) => log('mintScan ' + e.message)).finally(() => { globalThis._msBusy = false; }); }
   await proxyScan(S.lastBlock + 1, done).catch((e) => log('proxyScan ' + e.message));
   S.lastBlock = done;
 }
@@ -471,9 +479,10 @@ const MQ = new Map();
 const BAD_SEL = new Set(['0xa9059cbb', '0x095ea7b3', '0x23b872dd', '0x42842e0e', '0xb88d4fde', '0xa22cb465', '0x39509351', '0xd505accf', '0xf242432a', '0x2eb2c2d6']);
 const badSel = (d) => BAD_SEL.has(String(d || '').slice(0, 10).toLowerCase());
 const freeNoted = new Map(); // 免費 mint 通知：同一個項目等兩個錢包都打完，合成一則
+function noteFree(c, W, name = '') { const first = !freeNoted.has(c); if (first) freeNoted.set(c, new Set()); freeNoted.get(c).add(W.name); if (first) setTimeout(async () => { const ok = freeNoted.get(c) || new Set(); const nm = name || tokStr(await call(c, '0x06fdde03')) || c.slice(0, 10); await tg(`🆓 打了免費項目：${nm}（${WALLETS.map((x) => x.name + (ok.has(x.name) ? ' ✅' : ' ❌')).join('、')}）\n${c}`).catch(() => {}); }, 60e3); }
 function queueMint(c, fname, W, v) {
   const prev = MQ.get(W.name) || Promise.resolve();
-  const job = prev.then(() => autoMintMax(c, fname, W, v)).then(async (m) => { log(`[${W.name}] ${c} ${m.replace(/\n/g, ' | ')}`); if (m.startsWith('🤖')) { S.freeTrack = S.freeTrack || {}; S.freeTrack[c] = S.freeTrack[c] || { at: Date.now() }; } if (m.startsWith('🤖')) { const first = !freeNoted.has(c); if (first) freeNoted.set(c, new Set()); freeNoted.get(c).add(W.name); if (first) setTimeout(async () => { const ok = freeNoted.get(c) || new Set(); const nm = tokStr(await call(c, '0x06fdde03')) || c.slice(0, 10); await tg(`🆓 打了免費項目：${nm}（${WALLETS.map((x) => x.name + (ok.has(x.name) ? ' ✅' : ' ❌')).join('、')}）\n${c}`).catch(() => {}); }, 60e3); } }).catch((e) => log(`[${W.name}] 鑄造失敗 ${c} ${e.message}`));
+  const job = prev.then(() => autoMintMax(c, fname, W, v)).then(async (m) => { log(`[${W.name}] ${c} ${m.replace(/\n/g, ' | ')}`); if (m.startsWith('🤖')) { S.freeTrack = S.freeTrack || {}; S.freeTrack[c] = S.freeTrack[c] || { at: Date.now() }; } if (m.startsWith('🤖')) noteFree(c, W); }).catch((e) => log(`[${W.name}] 鑄造失敗 ${c} ${e.message}`));
   MQ.set(W.name, job);
   return '⏳ 已排入自動鑄造（背景進行）';
 }
@@ -688,6 +697,39 @@ const devKey = (x) => String(x.n || S.paid?.[x.c]?.name || x.c).toLowerCase().re
 function isRepeatDev(dep) { return !!dep && new Set(((S.devs || {})[dep] || []).filter((x) => Date.now() - x.t < 86400e3).map(devKey)).size >= 3; }
 function blacklist(dep, why) { if (!dep) return; S.black = S.black || {}; if (!S.black[dep]) { S.black[dep] = { at: ts(), why }; log(`黑名單：${dep}（${why}）`); } }
 
+const heatTier = (P) => ((P.agents || 0) >= 200 || (P.burst || 0) >= 30 ? 2 : (P.agents || 0) >= 100 || (P.burst || 0) >= 15 ? 1 : 0);
+function markUnmintable(c, P, sym, progress, why = '要官網簽名或白名單') { // 達到進場條件但我們打不了：標記不再重試，通知使用者一次
+  if (P.unmintable) return; P.unmintable = ts();
+  log(`打不了 ${c}（${sym}）：${why}`);
+  if (heatTier(P) >= 1 || ((progress || 0) >= 0.4 && (progress || 0) < 0.95)) tg(`⚠️ ${sym || P.name || '新項目'} 達到進場條件（累計 ${P.agents || 0} 個代理人${progress > 0 ? '，進度約 ' + Math.round(progress * 100) + '%' : ''}），但工具打不了：${why}。要的話請手動\n${c}`).catch(() => {});
+}
+function noteFail(c, P, sym, progress) { P.cf = (P.cf || 0) + 1; if (P.cf >= 8) markUnmintable(c, P, sym, progress, '模擬鑄造一直失敗，可能已賣完、要官網簽名、白名單或已關閉'); } // 重試 4 輪（兩個錢包）都失敗就不再試
+const agentCache = new Map(); // 地址 → 有沒有 .ai Agent ID
+async function rpcBatch(reqs) { const out = []; for (let i = 0; i < reqs.length; i += 100) { try { const j = await (await fetch('https://bsc-rpc.publicnode.com', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(reqs.slice(i, i + 100).map((r, k) => ({ jsonrpc: '2.0', id: i + k, ...r }))), signal: AbortSignal.timeout(20000) })).json(); for (const r of j || []) out[r.id] = r.result; } catch {} } return out; }
+async function heatOf(c, P) { // 算熱度：最近約 2.5 小時有幾個不同的 Agent ID 錢包參與鑄造，其中最近 3 分鐘幾個
+  const head = parseInt(await rpc('eth_blockNumber', []), 16); let tok = ''; const tr = await call(c, '0xfc0c546a'); if (tr && tr.length >= 66 && BigInt(tr.slice(0, 66)) > 0n) tok = '0x' + tr.slice(26, 66).toLowerCase();
+  const last = new Map(); const skip = new Set([c, tok, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead']);
+  const span = P.heatAt ? 6000 : 20000; // 第一次看約 2.5 小時，之後只看最近約 45 分鐘（累計數取最大值）
+  for (let b = head - span; b <= head; b += 10000) {
+    const L = await rpc('eth_getLogs', [{ address: tok ? [c, tok] : c, fromBlock: '0x' + b.toString(16), toBlock: '0x' + Math.min(b + 9999, head).toString(16) }]).catch(() => []);
+    for (const l of L || []) for (const t of (l.topics || []).slice(1)) { if (!/^0x0{24}[0-9a-f]{40}$/i.test(t) || t.slice(26, 34) === '00000000') continue; const a = ('0x' + t.slice(26)).toLowerCase(); if (skip.has(a)) continue; const bn = parseInt(l.blockNumber, 16); if (!last.has(a) || last.get(a) < bn) last.set(a, bn); }
+  }
+  const unknown = [...last.keys()].filter((a) => !agentCache.has(a)).slice(0, 400);
+  if (unknown.length) { const res = await rpcBatch(unknown.map((a) => ({ method: 'eth_call', params: [{ to: '0x' + REGISTRY, data: '0x70a08231' + wa(a) }, 'latest'] }))); unknown.forEach((a, i) => { if (res[i] !== undefined) agentCache.set(a, !!res[i] && res[i].length >= 66 && BigInt(res[i].slice(0, 66)) > 0n); }); }
+  let agents = 0, burst = 0; for (const [a, bn] of last) if (agentCache.get(a)) { agents++; if (bn >= head - 400) burst++; }
+  P.agents = Math.max(P.agents || 0, agents); P.burst = burst; P.heatAt = Date.now();
+}
+const hk = (P) => (P.heatAt || 0) + (heatTier(P) >= 1 || (P.progress || 0) >= 0.2 ? 0 : 540e3);
+async function heatWatch() { // 背景：替追蹤中的付費項目算熱度，看不懂的合約順便學別人的打法（不拖慢 15 秒的快速檢查）
+  const ents = Object.entries(S.paid || {}).filter(([c, P]) => !INFRA.has(c) && !P.unmintable && (P.progress || 0) < 0.999 && !WALLETS.every((W) => P.done?.[W.name]))
+    .sort((a, b) => hk(a[1]) - hk(b[1])).slice(0, 8); // 快滿或很熱的約每分鐘更新，其他約 10 分鐘
+  for (const [c, P] of ents) {
+    try {
+      await heatOf(c, P);
+      if (P.needLearn && (!P.replay || Date.now() - (P.replay.learnedAt || 0) > 120e3) && (heatTier(P) >= 1 || (P.progress || 0) >= 0.2 || (P.agents || 0) >= 20)) { const lr = await learnReplay(c).catch(() => null); if (lr) P.replay = lr; }
+    } catch (e) { log('heat ' + c + ' ' + e.message); }
+  }
+}
 async function learnReplay(c) { // 學別人最近成功的鑄造：最常見的函式、要付多少 BNB／USDT、最近有幾個錢包在打
   const head = parseInt(await rpc('eth_blockNumber', []), 16);
   const L = await rpc('eth_getLogs', [{ address: c, fromBlock: '0x' + (head - 1500).toString(16), toBlock: 'latest' }]).catch(() => []);
@@ -716,7 +758,9 @@ async function repeatDevOk(dep, c, P) {
   }
   return '';
 }
-async function paidLoop() {
+const memoC = new Map(); const cc = async (to, data, ttl = 600e3) => { const k = to + data, m = memoC.get(k); if (m && Date.now() - m.t < ttl) return m.v; const v = await call(to, data); memoC.set(k, { v, t: Date.now() }); if (memoC.size > 20000) memoC.clear(); return v; }; // 不常變的合約資料快取，加快檢查
+const busyP = new Set(); // 同一個項目同時只處理一次（快速檢查和一般檢查分開跑，避免重複打）
+async function paidLoop(mode = 'all') {
   S.paid = S.paid || {}; S.dyn = S.dyn || []; S.paidSpend = S.paidSpend || {};
   const today = new Date().toDateString(); if (S.paidSpend.day !== today) S.paidSpend = { day: today };
   let price = 0;
@@ -724,30 +768,35 @@ async function paidLoop() {
   if (!S.migrated2) { S.migrated2 = 1; for (const c of Object.keys(S.seenMints || {})) { if (S.paid[c]) continue; const cd = await codeOf(c); if ((cd.includes('e38fd349') && cd.includes('68bce8cd')) || (cd.includes('725c4058') && cd.includes('94bf804d'))) { S.paid[c] = { at: Date.now(), name: '', done: {} }; log('補登付費追蹤 ' + c); } } }
   // 進度 ≥40% 的（快滿的）每輪都看，不跟其他一百多個排隊；其餘輪流，每輪補到 16 個
   const all = Object.entries(S.paid);
-  const hotP = all.filter(([c, P]) => FORCE.has(c) || (P.progress || 0) >= 0.4).filter(([c, P]) => !WALLETS.every((W) => P.done[W.name])).slice(0, 10);
-  const doRest = Date.now() - (globalThis._paidRestAt || 0) > 55e3; if (doRest) globalThis._paidRestAt = Date.now(); // 快滿的每 15 秒看；其他的約每分鐘輪流看
-  const rest = doRest ? all.filter((e) => !hotP.includes(e)).sort((a, b) => (a[1].lastTry || 0) - (b[1].lastTry || 0)).slice(0, Math.max(6, 16 - hotP.length)) : [];
-  const ents = hotP.concat(rest);
+  
+  const hotP = all.filter(([c, P]) => FORCE.has(c) || (((P.progress || 0) >= 0.2 || heatTier(P) >= 1) && (P.progress || 0) < 0.999 && !P.unmintable)).filter(([c, P]) => !WALLETS.every((W) => P.done[W.name])).sort((a, b) => heatTier(b[1]) - heatTier(a[1]) || (b[1].progress || 0) - (a[1].progress || 0)).slice(0, 10);
+  // 快速檢查（mode='hot'）每 15 秒只看快滿／很熱的；一般檢查（mode='rest'）另外在背景約每分鐘輪流看其他的，互不拖慢
+  const rest = mode === 'hot' ? [] : all.filter((e) => !hotP.includes(e)).sort((a, b) => (a[1].lastTry || 0) - (b[1].lastTry || 0)).slice(0, 16);
+  const ents = mode === 'rest' ? rest : mode === 'hot' ? hotP : hotP.concat(rest);
   for (const [c, P] of ents) {
+    if (INFRA.has(c)) { delete S.paid[c]; continue; } // Agent ID 登記合約本身不是項目（註冊 .ai 身份），不打
+    if (busyP.has(c)) continue; busyP.add(c); const tE = Date.now();
+    try {
     P.lastTry = Date.now(); if (WALLETS.every((W) => P.done[W.name])) { delete S.paid[c]; continue; }
     if (Date.now() - P.at > PAID.maxAgeH * 3600e3) { delete S.paid[c]; continue; }
     const code = await codeOf(c);
     // 發現時還沒開的「免費」鑄造：之後每分鐘重試，一開就自動打
-    for (const W of WALLETS) { if (P.done[W.name]) continue; { const ff = await findFree(W.addr, c, code); if (!ff) continue; const n = ff.n; const m = await autoMintMax(c, n, W, ff.v); P.done[W.name] = 'free'; await tg(`🆕 [${W.name}] 之前還沒開的 Agent ID 項目 ${P.name || c.slice(0, 10)} 現在開了（免費）\n${m}`); } }
+    if (Date.now() - (P.freeTryAt || 0) > 120e3) { P.freeTryAt = Date.now(); for (const W of WALLETS) { if (P.done[W.name]) continue; { const ff = await findFree(W.addr, c, code); if (!ff) continue; const n = ff.n; const m = await autoMintMax(c, n, W, ff.v); P.done[W.name] = 'free'; await tg(`🆕 [${W.name}] 之前還沒開的 Agent ID 項目 ${P.name || c.slice(0, 10)} 現在開了（免費）\n${m}`); } } }
     let kind = code.includes('e38fd349') && code.includes('68bce8cd') ? 'bnb' : code.includes('725c4058') && code.includes('94bf804d') ? 'usdt' : null;
     let unit = 0n; // 一般 NFT：mint(數量) 付「單價 × 數量」BNB（像 Sentient Syndicate 的 PRICE）
-    if (!kind && code.includes('a0712d68')) for (const sel of ['8d859f3e', 'a035b1fe', '6817c76c', '13faede6', '817b1cd2']) { if (!code.includes(sel)) continue; const r = await call(c, '0x' + sel); if (r && r.length >= 66 && BigInt(r.slice(0, 66)) > 0n) { unit = BigInt(r.slice(0, 66)); kind = 'gen'; break; } }
+    if (!kind && code.includes('a0712d68')) for (const sel of ['8d859f3e', 'a035b1fe', '6817c76c', '13faede6', '817b1cd2']) { if (!code.includes(sel)) continue; const r = await cc(c, '0x' + sel); if (r && r.length >= 66 && BigInt(r.slice(0, 66)) > 0n) { unit = BigInt(r.slice(0, 66)); kind = 'gen'; break; } }
     if (!kind && P.recvValue) kind = 'recv';
     if (P.replay && badSel(P.replay.data)) delete P.replay;
     if (!kind && P.replay) kind = 'replay'; // 少見的鑄造函式：照別人的呼叫內容與金額打
     
-    if ((!kind || kind === 'replay') && (!P.replay || (P.replay.learned && Date.now() - (P.replay.learnedAt || 0) > 120e3))) { const lr = await learnReplay(c).catch(() => null); if (lr) { P.replay = lr; kind = 'replay'; } }
+    if (!kind || kind === 'replay') P.needLearn = 1; // 看不懂的合約：交給背景的熱度監測去學別人的打法，這裡不等
     if (!kind) continue;
+    if (P.unmintable && !FORCE.has(c)) continue;
     let soldR = await call(c, kind === 'bnb' ? '0xa2309ff8' : kind === 'gen' ? '0x18160ddd' : '0x192fc516');
-    if (!(soldR && soldR.length >= 66) && (kind === 'replay' || kind === 'recv')) for (const sel of ['0x02c7e7af', '0xa2309ff8', '0x9106d7ba', '0xf4514d2e', '0x505e05fd', '0x3a98ef39']) { const r = await call(c, sel); if (r && r.length >= 66) { soldR = r; break; } }
+    if (!(soldR && soldR.length >= 66) && (kind === 'replay' || kind === 'recv')) { if (P.soldSel) soldR = await call(c, P.soldSel); else for (const sel of ['0x02c7e7af', '0xa2309ff8', '0x9106d7ba', '0xf4514d2e', '0x505e05fd', '0x3a98ef39']) { const r = await cc(c, sel, 60e3); if (r && r.length >= 66) { soldR = r; P.soldSel = sel; break; } } }
     const sold = soldR && soldR.length >= 66 ? Number(BigInt(soldR.slice(0, 66))) : null;
-    let cap = null; for (const sel of ['0xd8f93498', '0xcef6feda', '0x29b80536', '0xd5abeb01', '0x32cb6b0c', '0x355274ea', '0x3a1d8d3a', '0xf1aee5a2', '0x85e3f997']) { const r = await call(c, sel); if (r && r.length >= 66) { const x = Number(BigInt(r.slice(0, 66))); if (x > 0 && sold != null && x >= sold && x < 1e12) { cap = x; break; } } }
-    let tokAddr0 = ''; { const tr0 = await call(c, '0xfc0c546a'); if (tr0 && tr0.length >= 66 && BigInt(tr0.slice(0, 66)) > 0n) tokAddr0 = '0x' + tr0.slice(26, 66); }
+    let cap = null; for (const sel of ['0xd8f93498', '0xcef6feda', '0x29b80536', '0xd5abeb01', '0x32cb6b0c', '0x355274ea', '0x3a1d8d3a', '0xf1aee5a2', '0x85e3f997']) { const r = await cc(c, sel); if (r && r.length >= 66) { const x = Number(BigInt(r.slice(0, 66))); if (x > 0 && sold != null && x >= sold && x < 1e12) { cap = x; break; } } }
+    let tokAddr0 = ''; { const tr0 = await cc(c, '0xfc0c546a', 3600e3); if (tr0 && tr0.length >= 66 && BigInt(tr0.slice(0, 66)) > 0n) tokAddr0 = '0x' + tr0.slice(26, 66); }
     let progress = cap && sold != null ? sold / cap : 0, how = '已售／上限';
     if (!(progress > 0)) { const pr = await progressOf(c, code, tokAddr0); progress = pr.progress || 0; how = pr.how || ''; }
     const prevProg = P.progress; P.progress = progress;
@@ -755,14 +804,13 @@ async function paidLoop() {
     { const now = Date.now(); P.ph = (P.ph || []).filter((x) => now - x.t < 15 * 60e3); if (!P.ph.length || now - P.ph[P.ph.length - 1].t > 10e3) P.ph.push({ t: now, p: progress }); }
     price = price || (await bnbUsd());
     const forced = FORCE.has(c);
-    const base = (P.ph || []).find((x) => Date.now() - x.t <= 3 * 60e3), rising = !!base && Date.now() - base.t >= 45e3 && progress - base.p >= PAID.riseDelta; 
     
-    const hotGo = !(progress > 0) && kind === 'replay' && (P.replay?.hot || 0) >= 15; // 讀不到進度：3 分鐘內 15 個以上不同錢包在打 → 當作正在被搶
-    if (!forced && !(progress >= PAID.goPct || (progress >= PAID.earlyPct && rising) || hotGo)) continue;
-    if (hotGo && !P.hotLogged) { P.hotLogged = 1; log(`讀不到進度但很熱：${c} 最近 ${P.replay.hot} 個錢包在打，照別人的方式跟打`); }
-    if (!forced && progress < PAID.goPct && !P.earlyLogged) { P.earlyLogged = 1; log(`提早進場 ${c}：進度 ${Math.round(progress * 100)}%，3 分鐘內漲了 ${Math.round((progress - base.p) * 100)}%`); }
+    const tier = heatTier(P), needPct = tier >= 2 ? 0.3 : tier >= 1 ? 0.4 : PAID.goPct;
+    const blindGo = !(progress > 0) && tier >= 1 && kind === 'replay';
+    if (!forced && !(progress >= needPct || blindGo)) continue;
+    if (!forced && !P.goLogged) { P.goLogged = 1; log(`進場 ${c}：${['一般', '熱', '超熱'][tier]}（累計 ${P.agents || 0} 個代理人、3 分鐘 ${P.burst || 0} 個），進度 ${progress > 0 ? Math.round(progress * 100) + '%' : '讀不到'}`); }
     // 防釣魚：① 同款合約 24 小時內被部署 3 次以上（批量發盤）不打 ② 進度要是很多人打出來的（至少 20 個不同錢包），不是項目方自己刷的
-    if (!forced) { const dep = await deployerOf(c); P.deployer = dep;
+    if (!forced) { const dep = P.deployer !== undefined ? P.deployer : await deployerOf(c); P.deployer = dep;
       if (dep && !(S.devs?.[dep] || []).some((x) => x.c === c)) noteDev(dep, c);
       if (dep && S.black?.[dep]) { if (!P.blackLogged) { P.blackLogged = 1; log(`跳過 ${c}：部署者 ${dep} 在黑名單（${S.black[dep].why}）`); } continue; }
       if (dep && P.fresh == null) P.fresh = await freshWallet(dep);
@@ -780,12 +828,12 @@ async function paidLoop() {
     // 使用者定：只打新的 → 兩天前就部署的老合約不打
     if (!forced) { if (P.old == null) { const head = parseInt(await rpc('eth_blockNumber', []), 16); const o = await rpc('eth_getCode', [c, '0x' + (head - 400000).toString(16)]).catch(() => '0x'); P.old = !!o && o.length > 2; } if (P.old) { for (const W of WALLETS) P.done[W.name] = P.done[W.name] || 'old'; continue; } }
     // 已經開池交易的項目不再自動鑄造（鑄造≈用市價買，不划算）
-    if (!forced) { const tk = tokAddr0 || c; let opened = false; for (const q of [WBNB, USDT]) { const pr = await call(FACTORY, '0xe6a43905' + wa(tk) + wa(q)); if (pr && BigInt(pr) > 0n) { const rs = await call('0x' + pr.slice(26), '0x0902f1ac'); if (rs && BigInt('0x' + rs.slice(2, 66)) > 0n) { opened = true; break; } } } if (opened) { for (const W of WALLETS) P.done[W.name] = P.done[W.name] || 'pool-open'; log(`跳過 ${c}：已經開池交易，不再鑄造`); continue; } }
+    if (!forced) { const tk = tokAddr0 || c; let opened = false; for (const q of [WBNB, USDT]) { const pr = await cc(FACTORY, '0xe6a43905' + wa(tk) + wa(q), 60e3); if (pr && BigInt(pr) > 0n) { const rs = await call('0x' + pr.slice(26), '0x0902f1ac'); if (rs && BigInt('0x' + rs.slice(2, 66)) > 0n) { opened = true; break; } } } if (opened) { for (const W of WALLETS) P.done[W.name] = P.done[W.name] || 'pool-open'; log(`跳過 ${c}：已經開池交易，不再鑄造`); continue; } }
     if (!forced && isSerial(code)) { if (!P.serialLogged) { P.serialLogged = 1; log(`跳過 ${c}：同款合約 24 小時內部署 3 次以上，疑似批量發盤`); } continue; }
-    if (!forced) { const need = Math.max(P.drain ? 40 : 20, P.needW || 0); const seen = Math.max(P.wallets || 0, HOT.get(c)?.from.size || 0); if (seen < need) { const r = await rpc('eth_getLogs', [{ address: tokAddr0 || c, fromBlock: '0x' + (parseInt(await rpc('eth_blockNumber', []), 16) - 3000).toString(16), toBlock: 'latest', topics: [T_TRANSFER] }]).catch(() => []); const uniq = new Set((r || []).map((l) => l.topics[2])).size; P.wallets = Math.max(P.wallets || 0, uniq); if (uniq < need) continue; } } // 還沒到 80%（或讀不到進度）→ 先不打，之後每分鐘再看
+    if (!forced) { const need = Math.max(P.drain ? 40 : 20, P.needW || 0); const seen = Math.max(P.wallets || 0, HOT.get(c)?.from.size || 0); if (seen < need) { if (Date.now() - (P.wAt || 0) < 60e3) continue; P.wAt = Date.now(); const r = await rpc('eth_getLogs', [{ address: tokAddr0 || c, fromBlock: '0x' + (parseInt(await rpc('eth_blockNumber', []), 16) - 3000).toString(16), toBlock: 'latest', topics: [T_TRANSFER] }]).catch(() => []); const uniq = new Set((r || []).map((l) => l.topics[2])).size; P.wallets = Math.max(P.wallets || 0, uniq); if (uniq < need) continue; } } // 還沒到 80%（或讀不到進度）→ 先不打，之後每分鐘再看
     const limitUsd = Infinity;
-    let tokAddr = ''; const tr = await call(c, '0xfc0c546a'); if (tr && tr.length >= 66) tokAddr = '0x' + tr.slice(26, 66);
-    const sym = tokAddr ? tokStr(await call(tokAddr, '0x95d89b41')) || P.name || c.slice(0, 8) : P.name || c.slice(0, 8);
+    let tokAddr = ''; const tr = await cc(c, '0xfc0c546a', 3600e3); if (tr && tr.length >= 66) tokAddr = '0x' + tr.slice(26, 66);
+    const sym = tokAddr ? tokStr(await cc(tokAddr, '0x95d89b41', 3600e3)) || P.name || c.slice(0, 8) : P.name || c.slice(0, 8);
     await Promise.all(WALLETS.map(async (W) => { 
       if (P.done[W.name]) return;
       try {
@@ -802,7 +850,7 @@ async function paidLoop() {
           if (ub < need) { const nb = ((Number(need - ub) / 1e18) * 1.04) / price; if (nb > bal - PAID.keepBnb) return; const sw = await W.baw(['market-order', 'swap', '--binanceChainId', '56', '--fromTokenQty', nb.toFixed(6), '--fromToken', NATIVE_BNB, '--toToken', USDT]); if (!sw.j?.success) throw new Error('BNB 換 USDT 失敗 ' + (sw.j?.error?.message || sw.t).slice(0, 100)); for (let i = 0; i < 30 && ub < need; i++) { await sleep(3000); ub = big(await call(USDT, '0x70a08231' + wa(W.addr))); } if (ub < need) throw new Error('USDT 沒到帳'); }
           await previewExec(W, USDT, '0x095ea7b3' + wa(c) + w(need), 0n, (sim) => ((sim?.allowanceChanges || []).some((a) => String(a.spender).toLowerCase() !== c) ? '授權對象不對' : ''));
           const v = BigInt(P.replay.value || '0');
-          const r = await revokeOnFail(W, USDT, c, async () => { data = await safeAddrs(W, c, data, v); return previewExec(W, c, data, v, (sim) => {
+          const r = await revokeOnFail(W, USDT, c, async () => { try { data = await safeAddrs(W, c, data, v); } catch (e) { markUnmintable(c, P, sym, progress); throw e; } return previewExec(W, c, data, v, (sim) => {
             const mine = (sim?.balanceChanges || []).filter((b) => String(b.owner).toLowerCase() === W.addr);
             if (sim?.authorityChanges?.length) return '有權限變化';
             const out = mine.filter((b) => Number(b.change) < 0); if (out.some((b) => { const a = String(b.contractAddress).toLowerCase(); return a !== USDT && !a.startsWith('0xeeee'); })) return '會扣到 USDT/BNB 以外的資產';
@@ -816,7 +864,7 @@ async function paidLoop() {
         if (kind === 'replay') {
           const v = BigInt(P.replay.value || '0'); const vb = Number(v) / 1e18;
           if (!price || vb * price > PAID.maxUsd || vb * 1.005 > bal - PAID.keepBnb) return;
-          try { await rpc('eth_call', [{ from: W.addr, to: c, data: P.replay.data, value: '0x' + v.toString(16) }, 'latest']); } catch { if (!P.replayFailLogged) { P.replayFailLogged = 1; log(`跳過 ${c}（${sym}）：進度 ${Math.round(progress * 100)}% 但照別人的方式鑄造會失敗（多半是白名單或後端簽名，只有特定錢包能打）`); } return; }
+          try { await rpc('eth_call', [{ from: W.addr, to: c, data: P.replay.data, value: '0x' + v.toString(16) }, 'latest']); } catch { markUnmintable(c, P, sym, progress); return; }
           const r = await previewExec(W, c, P.replay.data, v, (sim) => {
             const mine = (sim?.balanceChanges || []).filter((b) => String(b.owner).toLowerCase() === W.addr);
             if (sim?.allowanceChanges?.length || sim?.authorityChanges?.length) return '有授權變化';
@@ -824,13 +872,14 @@ async function paidLoop() {
             if (!mine.some((b) => Number(b.change) > 0)) return '模擬沒拿到東西'; return '';
           });
           S.paidSpend[W.name] = spent + vb; P.done[W.name] = 'minted';
+          if (!(v > 0n)) { noteFree(c, W, sym); return; } 
           await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}（照別人的鑄造方式）\n花 ${vb.toFixed(4)} BNB（約 ${(vb * price).toFixed(1)}U）· 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}`);
           return;
         }
         if (kind === 'recv') {
           const v = BigInt(P.recvValue); const vb = Number(v) / 1e18;
           if (!price || vb * price > PAID.maxUsd || vb * 1.005 > bal - PAID.keepBnb) return;
-          try { await rpc('eth_call', [{ from: W.addr, to: c, value: '0x' + v.toString(16) }, 'latest']); } catch { return; } // 不能鑄（沒資格、已打過、額度滿）
+          try { await rpc('eth_call', [{ from: W.addr, to: c, value: '0x' + v.toString(16) }, 'latest']); } catch { noteFail(c, P, sym, progress); return; } // 不能鑄（沒資格、已打過、額度滿）
           const r = await previewExec(W, c, '0x', v, (sim) => {
             const mine = (sim?.balanceChanges || []).filter((b) => String(b.owner).toLowerCase() === W.addr);
             if (sim?.allowanceChanges?.length || sim?.authorityChanges?.length) return '有授權變化';
@@ -845,7 +894,7 @@ async function paidLoop() {
         if (kind === 'gen') {
           let data = '';
           for (; n >= 1; n--) { costWei = unit * BigInt(n); if ((Number(costWei) / 1e18) * 1.005 > bal - PAID.keepBnb || !price || (Number(costWei) / 1e18) * price > PAID.maxUsd) continue; data = '0xa0712d68' + w(n); try { await rpc('eth_call', [{ from: W.addr, to: c, data, value: '0x' + costWei.toString(16) }, 'latest']); break; } catch {} }
-          if (n < 1) return;
+          if (n < 1) { noteFail(c, P, sym, progress); return; }
           const r = await previewExec(W, c, data, costWei, (sim) => {
             const mine = (sim?.balanceChanges || []).filter((b) => String(b.owner).toLowerCase() === W.addr);
             if (sim?.allowanceChanges?.length || sim?.authorityChanges?.length) return '有授權變化';
@@ -862,7 +911,7 @@ async function paidLoop() {
           const v = (costWei * 1005n) / 1000n, vb = Number(v) / 1e18;
           if (spent + vb > PAID.maxBnbPerDay || bal - vb < PAID.keepBnb) return;
           const data = '0xe38fd349' + w(n) + wa('0x0000000000000000000000000000000000000000') + w(v);
-          try { await rpc('eth_call', [{ from: W.addr, to: c, data, value: '0x' + v.toString(16) }, 'latest']); } catch { return; } // 還沒開或沒資格
+          try { await rpc('eth_call', [{ from: W.addr, to: c, data, value: '0x' + v.toString(16) }, 'latest']); } catch { noteFail(c, P, sym, progress); return; } // 還沒開或沒資格
           const pool = tokAddr ? Number(await poolOut(v, WBNB, tokAddr)) : 0;
           const r = await previewExec(W, c, data, v, (sim) => {
             if (pool > 0 && gotTok(sim, W) < pool * 1.1) log(`注意：${c} 已開池，鑄造沒有比池子便宜（第一原則：進度 ≥80% 照打）`);
@@ -899,8 +948,9 @@ async function paidLoop() {
           if (tokAddr) S.dyn.push({ sym, addr: tokAddr, cost: +cu.toFixed(2), only: W.addr, deployer: P.deployer, boughtAt: Date.now() });
           await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}\n${n} 份，花 ${cu.toFixed(2)} USDT（由 BNB 換）· 已售 ${sold ?? '?'} 份 · 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}\n已加入監控：3 倍回本、5 倍和 10 倍各賣一半、回落 60% 全賣`);
         }
-      } catch (e) { if (e.message.includes('已開池')) { P.done[W.name] = 'pool-cheaper'; log(`paid ${c} ${W.name} ${e.message}`); return; } P.fail = (P.fail || 0) + 1; log(`paid ${c} ${W.name} ${e.message}`); if (P.fail >= 6) { P.done[W.name] = 'fail'; await tg(`⚠️ [${W.name}] 付費項目 ${sym} 自動打失敗，已放棄：${e.message.slice(0, 150)}\n${c}`); } }
+      } catch (e) { if (e.message.includes('已開池')) { P.done[W.name] = 'pool-cheaper'; log(`paid ${c} ${W.name} ${e.message}`); return; } P.fail = (P.fail || 0) + 1; log(`paid ${c} ${W.name} ${e.message}`); if (kind === 'replay' && P.fail >= 2) { markUnmintable(c, P, sym, progress, '照別人的方式預演一直失敗'); return; } if (P.fail >= 6) { P.done[W.name] = 'fail'; await tg(`⚠️ [${W.name}] 付費項目 ${sym} 自動打失敗，已放棄：${e.message.slice(0, 150)}\n${c}`); } }
     }));
+    } finally { busyP.delete(c); const dt = Date.now() - tE; if (dt > 10e3) log(`檢查 ${c} 花了 ${Math.round(dt / 1000)} 秒（${mode}）`); }
   }
 }
 
@@ -1042,13 +1092,27 @@ async function cmdHold() {
   await tgSay('📦 還沒賣的幣\n' + (out.length ? out.join('\n') : '沒有') + '\n（NFT 不在這裡，NFT 成交量變多會另外通知）');
 }
 async function cmdStats() {
-  const free = new Set(); let paid = 0;
-  try { for (const l of readFileSync(LOG, 'utf8').split('\n')) { if (l.includes('🛒')) paid++; if (!l.includes('已自動鑄造') || /重播0x(（| \||$)/.test(l)) continue; const m = l.match(/項目\s*([^\n（(|]+?)\s*現在開了/) || l.match(/\] (0x[a-fA-F0-9]{40}) /); if (m) free.add(m[1].toLowerCase()); } } catch {}
+  // 免費項目：所有「已自動鑄造」的記錄都算（含一發現就馬上打的），用合約地址去重；「現在開了」那種用名稱對回合約；扣掉早上 0 BNB bug 的假鑄造
+  const free = new Set(), bog = new Set(), paidC = new Set(); let paid = 0; const n2a = {};
+  try {
+    const lines = readFileSync(LOG, 'utf8').split('\n');
+    for (const l of lines) { const m = l.match(/(?:專屬合約|項目)：([^|（(\n]+?)\s*(?:（[^|]*）)?\s*\|\s*(0x[a-fA-F0-9]{40})/); if (m && !n2a[m[1].trim().toLowerCase()]) n2a[m[1].trim().toLowerCase()] = m[2].toLowerCase(); }
+    for (const l of lines) {
+      if (l.includes('🛒')) { paid++; const c = l.match(/(?<![0-9a-fA-Fx])(0x[a-fA-F0-9]{40})(?![0-9a-fA-F])/); if (c) paidC.add(c[1].toLowerCase()); }
+      if (!l.includes('已自動鑄造')) continue;
+      const nm = l.match(/項目\s*([^\n（(|]+?)\s*現在開了/); let key = '';
+      if (nm) key = n2a[nm[1].trim().toLowerCase()] || 'N:' + nm[1].trim().toLowerCase();
+      else { const c = l.match(/(?<![0-9a-fA-Fx])(0x[a-fA-F0-9]{40})(?![0-9a-fA-F])/); if (c) key = c[1].toLowerCase(); }
+      if (!key) continue;
+      (/重播0x(（| \||$)/.test(l) ? bog : free).add(key);
+    }
+    for (const k of bog) free.delete(k);
+  } catch {}
   const tr = S.trades || [], by = {};
   for (const x of tr) { const k = x.sym; by[k] = by[k] || { usd: 0, n: 0 }; by[k].usd += x.usd; by[k].n++; }
   const px = await bnbUsd().catch(() => 0); let tot = 0; for (const W of WALLETS) tot += Number(BigInt(await rpc('eth_getBalance', [W.addr, 'latest']))) / 1e18;
   const lines = Object.entries(by).map(([k, v]) => `${k}：賣 ${v.n} 筆，拿回約 ${v.usd.toFixed(2)}U`);
-  await tgSay(`📊 戰績\n自動打的免費項目：約 ${free.size} 個\n付費打的：${paid} 筆\n${lines.length ? '有記錄的賣出：\n' + lines.join('\n') + '\n' : ''}錢包現在共 ${tot.toFixed(4)} BNB（約 ${(tot * px).toFixed(2)}U）`);
+  await tgSay(`📊 戰績\n自動打的免費項目：${free.size} 個\n付費打的：${paidC.size} 個項目（${paid} 筆）\n${lines.length ? '有記錄的賣出：\n' + lines.join('\n') + '\n' : ''}錢包現在共 ${tot.toFixed(4)} BNB（約 ${(tot * px).toFixed(2)}U）`);
 }
 async function tgCmdLoop() {
   if (!TG) return;
@@ -1087,18 +1151,20 @@ async function main() {
     if (existsSync(join(DIR, 'WATCH_STOP'))) { log('WATCH_STOP，退出'); save(); process.exit(0); }
     try {
       const head = parseInt(await rpc('eth_blockNumber', []), 16);
-      await scanNew(head);
-      if (Date.now() - lastHold > 5000) { lastHold = Date.now(); await holdings(head); } else if (Object.values(S.tokens).some((st) => st.openAt && Date.now() - st.openAt < RULE.fastMin * 60e3 && st.stage !== 9 && !st.done)) await holdings(head, true); // 速戰幣每秒看
-      if (!globalThis._flapAt || Date.now() - globalThis._flapAt > 30e3) { globalThis._flapAt = Date.now(); await flapAgentWatch().catch((e) => log('flap ' + e.message)); }
-      if (!globalThis._toshAt || Date.now() - globalThis._toshAt > 60e3) { globalThis._toshAt = Date.now(); await toshWatch().catch((e) => log('tosh ' + e.message)); }
-      if (!globalThis._aidropAt || Date.now() - globalThis._aidropAt > 120e3) { globalThis._aidropAt = Date.now(); await aidropWatch(head); }
-      if (!globalThis._paidBusy && (!globalThis._paidAt || Date.now() - globalThis._paidAt > 15e3)) { globalThis._paidAt = Date.now(); globalThis._paidBusy = true; paidLoop().catch((e) => log('paidLoop ' + e.message)).finally(() => { globalThis._paidBusy = false; }); } // 背景跑，不卡住掃描
+      const tS = Date.now(); await scanNew(head); if (Date.now() - tS > 20e3) log(`掃描一輪花了 ${Math.round((Date.now() - tS) / 1000)} 秒`);
+      if (Date.now() - lastHold > 5000) { lastHold = Date.now(); const tH = Date.now(); await holdings(head); if (Date.now() - tH > 20e3) log(`持倉檢查花了 ${Math.round((Date.now() - tH) / 1000)} 秒`); } else if (Object.values(S.tokens).some((st) => st.openAt && Date.now() - st.openAt < RULE.fastMin * 60e3 && st.stage !== 9 && !st.done)) await holdings(head, true); // 速戰幣每秒看
+      if (!globalThis._flapAt || Date.now() - globalThis._flapAt > 30e3) { globalThis._flapAt = Date.now(); const tF = Date.now(); await flapAgentWatch().catch((e) => log('flap ' + e.message)); if (Date.now() - tF > 20e3) log(`Flap 檢查花了 ${Math.round((Date.now() - tF) / 1000)} 秒`); }
+      if (!globalThis._toshAt || Date.now() - globalThis._toshAt > 60e3) { globalThis._toshAt = Date.now(); const tT = Date.now(); await toshWatch().catch((e) => log('tosh ' + e.message)); if (Date.now() - tT > 20e3) log(`Tosh 檢查花了 ${Math.round((Date.now() - tT) / 1000)} 秒`); }
+      if (!globalThis._aidropAt || Date.now() - globalThis._aidropAt > 120e3) { globalThis._aidropAt = Date.now(); const tA = Date.now(); await aidropWatch(head); if (Date.now() - tA > 20e3) log(`aidrop 檢查花了 ${Math.round((Date.now() - tA) / 1000)} 秒`); }
+      if (!globalThis._paidBusy && (!globalThis._paidAt || Date.now() - globalThis._paidAt > 15e3)) { globalThis._paidAt = Date.now(); globalThis._paidBusy = true; paidLoop('hot').catch((e) => log('paidLoop ' + e.message)).finally(() => { globalThis._paidBusy = false; globalThis._paidDur = Math.round((Date.now() - globalThis._paidAt) / 1000); }); } // 快速檢查：每 15 秒
+      if (!globalThis._restBusy && (!globalThis._restAt || Date.now() - globalThis._restAt > 60e3)) { globalThis._restAt = Date.now(); globalThis._restBusy = true; paidLoop('rest').catch((e) => log('paidRest ' + e.message)).finally(() => { globalThis._restBusy = false; }); } // 一般檢查：約每分鐘 // 背景跑，不卡住掃描
       if (!globalThis._smartBusy && Date.now() - (S.smartAt || 0) > 6 * 3600e3) { S.smartAt = Date.now(); globalThis._smartBusy = true; buildSmart().catch((e) => log('smart ' + e.message)).finally(() => { globalThis._smartBusy = false; }); }
       if (!globalThis._mmBusy && existsSync(join(DIR, 'data', 'manual_mint.json'))) { globalThis._mmBusy = true; manualMints().catch((e) => log('manual ' + e.message)).finally(() => { globalThis._mmBusy = false; }); }
+      if (!globalThis._heatBusy && Date.now() - (globalThis._heatAt || 0) > 20e3) { globalThis._heatAt = Date.now(); globalThis._heatBusy = true; heatWatch().catch((e) => log('heatWatch ' + e.message)).finally(() => { globalThis._heatBusy = false; }); } // 熱度監測（背景）
       if (!globalThis._fpBusy && Date.now() - (globalThis._fpAt || 0) > 300e3) { globalThis._fpAt = Date.now(); globalThis._fpBusy = true; freeProgWatch().catch((e) => log('freeProg ' + e.message)).finally(() => { globalThis._fpBusy = false; }); } // 免費項目進度，每 5 分鐘
       if (!globalThis._nftBusy && Date.now() - (S.nftVolAt || 0) > 12 * 3600e3) { S.nftVolAt = Date.now(); globalThis._nftBusy = true; nftVolWatch().catch((e) => log('nftVol ' + e.message)).finally(() => { globalThis._nftBusy = false; }); } // 12 小時看一次 NFT 成交量（背景）
       if (Date.now() - lastLogin > 600e3) { lastLogin = Date.now(); loginCheck().catch(() => {}); }
-      lastLoopAt = Date.now(); save(); writeFileSync(join(DIR, 'data', 'watch_heartbeat.txt'), ts() + ' 掃描落後 ' + (S.scanLag ?? '?') + ' 塊');
+      lastLoopAt = Date.now(); save(); writeFileSync(join(DIR, 'data', 'watch_heartbeat.txt'), ts() + ' 掃描落後 ' + (S.scanLag ?? '?') + ' 塊 · 付費檢查一輪 ' + (globalThis._paidDur ?? '?') + ' 秒');
       if ((S.scanLag || 0) > 400 && Date.now() - (S.lagAlert || 0) > 3600e3) { S.lagAlert = Date.now(); await tg(`⚠️ 新合約掃描落後 ${S.scanLag} 個區塊（約 ${Math.round(S.scanLag * 0.45 / 60)} 分鐘），可能是公用節點變慢，手動處理`); }
     } catch (e) { log('出错 ' + e.message); }
     await sleep(1000);
