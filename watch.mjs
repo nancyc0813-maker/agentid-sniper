@@ -311,7 +311,7 @@ async function checkMinted(tok, m) {
     const noAddr = sampleTx && !sampleTx.input.toLowerCase().includes(sampleTx.from.slice(2).toLowerCase());
     S.paid[target] = { at: Date.now(), name, done: {}, wallets: m.to.size, ...((sampleTx?.input || '0x') === '0x' && val > 0n ? { recvValue: val.toString(), recvSeen: m.to.size } : {}), ...(noAddr && sampleTx.input !== '0x' ? { replay: { data: sampleTx.input, value: val.toString() } } : {}) };
   }
-  await tg(`🔥 發現正在被鑄造的 Agent ID 項目${name ? '：' + name : ''}（3 分鐘內鑄給 ${m.to.size} 個錢包${share ? `，${Math.round(share * 100)}% 有 .ai 身份` : ''}）\n${target}\n${minted || '⚪ 不是免費的 → 已加入追蹤：進度超過 80% 且每個錢包 ≤30U 會自動打'}`);
+  await tg(`🔥 發現正在被鑄造的 Agent ID 項目${name ? '：' + name : ''}（3 分鐘內鑄給 ${m.to.size} 個錢包${share ? `，${Math.round(share * 100)}% 有 .ai 身份` : ''}）\n${target}\n${minted || '⚪ 不是免費的 → 已加入追蹤：進度超過 80% 且每個錢包 ≤20U 會自動打'}`);
 }
 
 async function hotScan() {
@@ -348,7 +348,7 @@ async function hotScan() {
       const top = [...(h.vals || new Map()).entries()].sort((a, b) => b[1] - a[1])[0];
       S.paid[c] = { at: Date.now(), name, done: {}, wallets: h.from.size, ...(top && top[1] >= 2 ? { recvValue: top[0], recvSeen: top[1] } : {}) };
     }
-    await tg(`🔥 發現正在被搶打的 Agent ID 項目${name ? '：' + name : ''}${viaAgents ? `（合約沒寫 Agent ID 檢查，但打它的錢包 ${Math.round(viaAgents * 100)}% 持有 .ai 身份，可能是後端簽名驗證）` : ''}（3 分鐘內 ${h.from.size} 個錢包${h.smart?.size ? '，其中聰明錢包 ' + h.smart.size + ' 個' : ''}）\n${c}\n${minted || '⚪ 不是免費的 → 已加入追蹤：進度超過 80% 且每個錢包 ≤30U 會自動打'}\nhttps://bscscan.com/address/${c}`);
+    await tg(`🔥 發現正在被搶打的 Agent ID 項目${name ? '：' + name : ''}${viaAgents ? `（合約沒寫 Agent ID 檢查，但打它的錢包 ${Math.round(viaAgents * 100)}% 持有 .ai 身份，可能是後端簽名驗證）` : ''}（3 分鐘內 ${h.from.size} 個錢包${h.smart?.size ? '，其中聰明錢包 ' + h.smart.size + ' 個' : ''}）\n${c}\n${minted || '⚪ 不是免費的 → 已加入追蹤：進度超過 80% 且每個錢包 ≤20U 會自動打'}\nhttps://bscscan.com/address/${c}`);
   }
 }
 
@@ -401,7 +401,7 @@ async function scanNew(head) {
         let minted = '';
         for (const W of WALLETS) { const ff = await findFree(W.addr, c, code); const f = ff?.n; if (f) minted += `[${W.name}] ` + queueMint(c, f, W, ff.v) + '\n'; }
         if (!ok.length) { S.paid = S.paid || {}; S.paid[c] = { at: Date.now(), name, done: {} }; }
-        await tg(`🆕 發現新的 Agent ID 專屬合約${name ? '：' + name : ''}\n${c}\n${ok.length ? '✅ 模擬免費可鑄：' + ok.join('、') + '\n' + minted : `⚪ 現在不是免費的（${pay}，或還沒開）→ 已加入追蹤：\n· 開放後若免費或手續費 ≤0.001 BNB → 自動打\n· 付費 → 進度超過 80% 且每個錢包 ≤30U → 自動打`}\nhttps://bscscan.com/address/${c}`);
+        await tg(`🆕 發現新的 Agent ID 專屬合約${name ? '：' + name : ''}\n${c}\n${ok.length ? '✅ 模擬免費可鑄：' + ok.join('、') + '\n' + minted : `⚪ 現在不是免費的（${pay}，或還沒開）→ 已加入追蹤：\n· 開放後若免費或手續費 ≤0.001 BNB → 自動打\n· 付費 → 進度超過 80% 且每個錢包 ≤20U → 自動打`}\nhttps://bscscan.com/address/${c}`);
       } catch {}
     }
   }
@@ -573,11 +573,11 @@ async function flapAgentWatch() {
 
 // ---------- AI 錢包登入狀態 ----------
 // ---------- 使用者確認：Agent ID 專屬的「付費」鑄造也自動打（有預算上限＋過濾）----------
-// 使用者手動指定「直接打」的項目（不看 80% 與防釣魚，只受 30U 上限與模擬安全檢查）
+// 使用者手動指定「直接打」的項目（不看 80% 與防釣魚，只受 20U 上限與模擬安全檢查）
 const FORCE = new Set((CONFIG.forceMint || []).map((a) => a.toLowerCase())); // config.json 的 forceMint：手動指定直接打的合約
 const PAID = {
   
-  goPct: CONFIG.paid?.goPct ?? 0.8, maxUsd: CONFIG.paid?.maxUsd ?? 30, // 第一原則：鑄造進度 ≥ 80% 就打（不看幾個錢包進場、不看是否比池子便宜）；每個錢包每個項目 ≤ 30U
+  goPct: 0.8, maxUsd: 20, 
   maxBnbPerDay: CONFIG.paid?.maxBnbPerDay ?? 1e9,        // 使用者說不管怎樣就打 → 不設每日上限（只受錢包餘額限制）
   minSold: 30,              // 至少已經有 30 份被別人鑄過才跟（避開沒人理的／陷阱合約）
   maxAgeH: 168,              // 發現後 48 小時內還沒開就放棄
