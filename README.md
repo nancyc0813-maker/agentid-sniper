@@ -23,7 +23,8 @@
 - 铸造在背景排队进行，不会拖慢扫描。
 - 免费铸造拿到的代币自动加入持仓追踪，开池后到 5 倍、10 倍会通知，从最高回落 50% 自动全卖。
 - 发现时还没开放 → 48 小时内每分钟重试，一开就打。
-- **付费项目进场规则**：铸造进度 ≥ 70% 直接打；60%～70% 且 3 分钟内涨 2% 以上（正在被抢）也打。进度 ≥40% 的项目每 15 秒检查一次，所有钱包同时打。每个钱包每个项目 ≤ 20U（可在 config 调整）。读不到进度的不打。
+- **付费项目进场规则**：铸造进度 ≥ 60% 就打。进度 ≥40% 的项目每 15 秒检查一次，多个钱包同时打，每个钱包每个项目 ≤ 20U（可在 config 调整）。
+- **看不懂的合约也能打**：读不到进度或不认得铸造函数时，自动学别人最近成功的铸造交易（包括要付 USDT 的，例如「USDT 铸造＋邀请人参数」这种），3 分钟内有 15 个以上钱包在打就跟进；需要 USDT 会自动用 BNB 换、授权后再打，份数放大到预算内最多 10 份。
 - 支持四种付费铸造方式：BNB 报价型、USDT 份额型、单价×数量 NFT、直接转 BNB 就铸（价格取大家最常转的金额）。USDT 不够会自动用 BNB 换。
 - 进度读法：先找“已售／上限”函数；没有的话看“铸造池剩多少币”（部署时持有量 vs 现在）。
 - **只打新的**：两天前部署的老合约、已经开池交易的项目，不再自动铸造。
@@ -81,7 +82,7 @@ copy config.example.json config.json   # macOS/Linux 用 cp
 ```
 
 编辑 `config.json`：
-- `wallets`：你的 Agent ID 钱包地址。第一个用系统安装的 `baw`；第二个以后要先跑 `setup_wallet2.bat`（独立的 baw 副本，避免两个钱包互相踢下线）。
+- `wallets`：你的 Agent ID 钱包地址。**一个钱包就能用**（用系统安装的 `baw`）。想同时用多个钱包再往下加；第二个以后要先跑 `setup_wallet2.bat`（独立的 baw 副本，避免互相踢下线），并在该钱包加上 `"bawDir": "baw2", "bawPkg": "baw2pkg", "instanceId": "wallet-2"`（选用）。
 - `telegram`：Bot Token（找 @BotFather 创建）和你的 chat id。
 - `paid` / `rules`：预算和卖出规则。
 - `tokens`：想手动追踪的持仓（例如 `{ "sym": "XXX", "addr": "0x…", "cost": 10, "both": true }`；`hold: true` 只通知不卖；`sellNow: true` 立刻全卖）。
@@ -90,7 +91,7 @@ copy config.example.json config.json   # macOS/Linux 用 cp
 
 ```bash
 node login.mjs 1
-node login.mjs 2
+# 有第二个钱包再执行：node login.mjs 2
 ```
 
 ## 运行
