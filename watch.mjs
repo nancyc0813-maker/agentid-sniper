@@ -831,7 +831,7 @@ async function nftVolWatch() {
     let held = 0; for (const W of WALLETS) { const r = await call(col, '0x70a08231' + wa(W.addr)); if (r && r.length >= 66) held += Number(BigInt(r.slice(0, 66))); }
     const f = fills[col] || [], prev = S.nftVol[col];
     const px = f.filter((x) => x != null), vol = px.reduce((a, b) => a + b, 0);
-    const hot = held > 0 && ((prev ? (f.length >= 3 && f.length >= 2 * (prev.f || 0)) || (moves >= 20 && moves >= 3 * (prev.t || 0)) : (f.length >= 5 || moves >= 40)));
+    const hot = held > 0 && px.length >= 3 && vol > 0 && (prev ? px.length >= 2 * (prev.f || 0) : px.length >= 5); // 只看真的有付錢的成交（使用者 15:22：轉來轉去不算）
     if (hot) {
       const name = tokStr(await call(col, '0x06fdde03')) || col.slice(0, 10);
       await tg(`🦋 NFT 成交量變多：${name}\n我們兩個錢包共持有 ${held} 張\n過去 12 小時 Element 成交 ${f.length} 筆${prev ? '（上次 ' + (prev.f || 0) + ' 筆）' : ''}${px.length ? `，成交價 ${Math.min(...px).toFixed(4)}～${Math.max(...px).toFixed(4)} BNB，合計 ${vol.toFixed(4)} BNB` : ''}\n轉手 ${moves} 次${prev ? '（上次 ' + (prev.t || 0) + ' 次）' : ''}\n${col}\nhttps://element.market/assets/bsc/${col}/1\n要掛單或賣手動處理`);
