@@ -2,7 +2,8 @@
 // 全部在本地跑：掃 BSC 新合約 → 模擬 → 用 baw CLI 自動打 → 開池後照規則自動賣 → Telegram 通知。不使用任何 AI。
 // 停止：在同資料夾放 WATCH_STOP 檔。設定見 config.example.json。
 import { execFile } from 'node:child_process';
-import { appendFileSync, writeFileSync, readFileSync, existsSync, statSync, renameSync } from 'node:fs';
+import { appendFileSync, writeFileSync, readFileSync, existsSync, statSync, renameSync, copyFileSync, unlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -299,6 +300,12 @@ async function holdW(W, head, onlyFast) { // 所有錢包同時跑（速戰：�
       if (xNow >= 5 && !st.done2.includes('f5')) { const part = (bal * BigInt(Math.max(1, Math.min(100, Math.ceil((t.cost / v) * 100))))) / 100n; if (await sell(t, st, part, `FISTAGENT 到 5 倍，賣回本錢 ${t.cost}U（持倉約 ${v.toFixed(2)}U）`, W)) st.done2.push('f5'); }
       else if (xNow >= 10 && !st.done2.includes('f10')) { if (await sell(t, st, (bal * 30n) / 100n, `FISTAGENT 到 10 倍，賣出 30%（持倉約 ${v.toFixed(2)}U）`, W)) st.done2.push('f10'); }
       else if (xNow >= 20 && !st.done2.includes('f20')) { st.done2.push('f20'); await tg(`🔥 [${W.name}] FISTAGENT 到 ${Math.floor(xNow)} 倍了！（成本 ${t.cost}U，現在持倉約 ${v.toFixed(2)}U）\n照你的設定 20 倍以上不自動賣，要賣在 TG 打「賣 FISTAGENT」或「賣 FISTAGENT 一半」`); }
+      st.last = { v, at: ts() }; continue;
+    }
+    if (t.custom === 'nova') { /* 使用者 10/31 23:18：NOVA 5 倍賣回本錢，10 倍發 TG 通知，不自動賣其他 */
+      const xNow = vFull / t.cost;
+      if (xNow >= 5 && !st.done2.includes('n5')) { const part = (bal * BigInt(Math.max(1, Math.min(100, Math.ceil((t.cost / v) * 100))))) / 100n; if (await sell(t, st, part, `NOVA 到 5 倍，賣回本錢 ${t.cost}U（持倉約 ${v.toFixed(2)}U）`, W)) st.done2.push('n5'); }
+      else if (xNow >= 10 && !st.done2.includes('n10')) { st.done2.push('n10'); await tg(`🔥 [${W.name}] NOVA 到 ${Math.floor(xNow)} 倍了！（成本 ${t.cost}U，現在持倉約 ${v.toFixed(2)}U）\n照你的設定不自動賣，要賣在 TG 打「賣 NOV」或「賣 NOV 一半」`); }
       st.last = { v, at: ts() }; continue;
     }
     const age = now - (st.openAt || 0), fast = age < RULE.fastMin * 60e3;
@@ -646,6 +653,10 @@ async function freeProgress(c) { /* 免費項目的進度：已鑄造／總量�
   if (tsR && tsR.length >= 66) { const sup = Number(BigInt(tsR.slice(0, 66))); for (const sel of ['0xd5abeb01', '0x32cb6b0c', '0x355274ea', '0xe985e367', '0xf1aee5a2', '0x0f2cdd6c', '0xa035b1fe']) { const r = await call(c, sel); if (r && r.length >= 66) { const x = Number(BigInt(r.slice(0, 66))); if (x > 0 && x >= sup && x < 1e15) { p = sup / x; break; } } } }
   if (p == null) { const code = (await rpc('eth_getCode', [c, 'latest']).catch(() => '')) || ''; const pr = await progressOf(c, code.toLowerCase(), '').catch(() => ({})); if (pr.progress > 0) p = pr.progress; }
   fpCache.set(c, { t: Date.now(), p }); return p;
+}
+async function progressSweep() { /* 使用者 10/31 23:21 查 Pulsepanther 沒打到：追蹤名單 500 多個，一般檢查每輪只看 16 個、一個要 10~30 秒，低進度的項目要 2~3 小時才回頭看一次，10% 直接漲到 100% 都沒發現。改成每分鐘用輕量方式只讀進度（最多 80 個、6 個同時），進度過 45% 就會進快速名單，每 15 秒檢查 */
+  const now = Date.now(); const list = Object.entries(S.paid || {}).filter(([c, P]) => !P.unmintable && (P.progress || 0) < 0.999 && now - (P.at || 0) < 3 * 86400e3 && !WALLETS.every((W) => P.done?.[W.name])).sort((x, y) => (x[1].sweepAt || 0) - (y[1].sweepAt || 0)).slice(0, 80);
+  let i = 0; await Promise.all(Array.from({ length: 6 }, async () => { while (i < list.length) { const [c, P] = list[i++]; try { const fp = await freeProgress(c); P.sweepAt = Date.now(); if (fp != null && fp > 0) { if (fp >= 0.45 && (P.progress || 0) < 0.45) log(`進度掃描：${P.name || c} 進度 ${Math.round(fp * 100)}%，移到快速檢查`); P.progress = Math.min(fp, 0.99); /* 100% 交給快速檢查用正式讀法確認，避免讀錯就永遠不看 */ } } catch {} } }));
 }
 async function autoMint(c, fname, W = WALLETS[0], val = 0n) {
   /* 使用者 10/31 19:21：新規則——不管免費還是付費，進度超過 50% 就打，之前的規矩（重複 DEV、黑名單、熱度、手續費上限…）全部不看；只保留貔貅類安全檢查（每筆都模擬、不能授權、不能扣到預期外的資產、Flap 禁止）。讀不到進度的才用熱度判斷 */
@@ -1280,6 +1291,43 @@ async function manualMints() {
   }
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
+// ── 更新提醒（開源版才開；使用者 10/31 23:11：安全第一——只提醒，用戶回 /update 才更新；更新前安檢＋備份，新版起不來自動換回）──
+const UPD = { on: true, ver: '2.4.1', repo: 'nancyc0813-maker/agentid-sniper' };
+const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
+async function updCheck(quiet = false) {
+  if (!UPD.on) return null;
+  try {
+    const r = await fetch(`https://raw.githubusercontent.com/${UPD.repo}/main/version.json?t=${Date.now()}`, { signal: AbortSignal.timeout(15000) }); if (!r.ok) return null;
+    const v = await r.json(); if (!v.version || !verGt(v.version, UPD.ver)) return null; UPD.latest = v;
+    if (!quiet && S.updNotified !== v.version) {
+      S.updNotified = v.version; save();
+      const msg = `🔔 Agent ID Sniper 有新版 v${v.version}（你現在是 v${UPD.ver}）\n${(v.notes || []).map((x) => '• ' + x).join('\n')}\n\n要更新：在 TG 回「/update」，或在工具資料夾放一個名為 UPDATE 的空檔案。\n更新前會自動安檢、備份舊版；新版起不來會自動換回舊版。`;
+      log(msg.replace(/\n/g, ' | ')); console.log('\n' + '='.repeat(48) + '\n' + msg + '\n' + '='.repeat(48) + '\n'); await tgSay(msg);
+    }
+    return v;
+  } catch { return null; }
+}
+async function doUpdate() {
+  if (!UPD.on) return '這個版本不自動更新';
+  const v = await updCheck(true); if (!v) return `目前已經是最新版 v${UPD.ver}`;
+  const r = await fetch(`https://raw.githubusercontent.com/${UPD.repo}/main/watch.mjs?t=${Date.now()}`, { signal: AbortSignal.timeout(60000) }).catch(() => null);
+  if (!r || !r.ok) return '⚠️ 下載新版失敗，等一下再試';
+  const buf = Buffer.from(await r.arrayBuffer()), code = buf.toString('utf8');
+  if (!v.sha256 || createHash('sha256').update(buf).digest('hex') !== v.sha256) return '⛔ 新版檔案校驗不符（可能下載不完整或被改過），已取消更新';
+  const old = readFileSync(SELF, 'utf8');
+  const hosts = (t) => new Set([...t.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((m) => m[1].toLowerCase()));
+  const ho = hosts(old), nh = [...hosts(code)].filter((h) => !ho.has(h));
+  if (nh.length) return `⛔ 新版會連到沒見過的網站（${nh.slice(0, 3).join('、')}），為了安全已拒絕自動更新。請到 GitHub 自己看過再手動下載。`;
+  const risky = [/private[_\s-]?key/gi, /mnemonic/gi, /seed\s?phrase/gi, /助記詞|助记词|私鑰|私钥/g, /\beval\s*\(/g, /new\s+Function\s*\(/g, /child_process/g, /powershell|Invoke-WebRequest|curl\s|wget\s|certutil|bitsadmin/gi, /execSync|spawnSync|\bspawn\s*\(/g, /\.(exe|dll|ps1|bat|cmd|vbs)['"`]/gi, /keystore/gi];
+  for (const re of risky) { const n = (t) => (t.match(re) || []).length; if (n(code) > n(old)) return `⛔ 新版出現可疑內容（${re.source.slice(0, 40)}），為了安全已拒絕自動更新。請到 GitHub 自己看過再手動下載。`; }
+  const tmp = join(DIR, 'data', 'update_new.mjs'); writeFileSync(tmp, code);
+  const bad = await new Promise((res) => execFile(process.execPath, ['--check', tmp], { windowsHide: true, timeout: 60000 }, (e, o, er) => res(e ? String(er || e.message) : '')));
+  if (bad) { try { unlinkSync(tmp); } catch {} return '⛔ 新版語法檢查沒過，已取消更新：' + bad.slice(0, 120); }
+  copyFileSync(SELF, join(DIR, 'data', 'update_backup.mjs')); writeFileSync(SELF, code); try { unlinkSync(tmp); } catch {}
+  log(`已更新到 v${v.version}（舊版備份在 data/update_backup.mjs）`);
+  return `✅ 已更新到 v${v.version}，舊版已備份，工具會自動重啟載入。新版如果連續 3 次啟動失敗，會自動換回舊版。`;
+}
+if (UPD.on) setTimeout(() => { const b = join(DIR, 'data', 'update_backup.mjs'); if (existsSync(b)) { try { renameSync(b, join(DIR, 'data', 'backup_prev.mjs')); log('新版已穩定運行 10 分鐘，舊版備份改存為 data/backup_prev.mjs'); } catch {} } }, 10 * 60e3).unref();
 async function tgSay(text) { if (!TG) return; log('TG回覆: ' + text.replace(/\n/g, ' | ')); try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: TG.b, text, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {} }
 function findTok(q, W) {
   q = q.toLowerCase();
@@ -1358,6 +1406,7 @@ async function tgCmdLoop() {
         } else if (/^(餘額|余额|錢包|钱包|balance)$/i.test(txt)) { cmdBalance().catch(() => {}); }
         else if (/^(持倉|持仓|holdings?)$/i.test(txt)) { cmdHold().catch((e) => tgSay('⚠️ ' + e.message)); }
         else if (/^(戰績|战绩|統計|统计|stats?)$/i.test(txt)) { cmdStats().catch((e) => tgSay('⚠️ ' + e.message)); }
+        else if (/^(update|更新)$/i.test(txt)) { if (!UPD.on) await tgSay('這個版本不自動更新'); else { await tgSay('⚡ 收到，下載新版並安檢中…'); await tgSay(await doUpdate().catch((e) => '⚠️ 更新出錯：' + e.message)); } }
         else if (/^(help|指令|說明|说明)$/i.test(txt)) await tgSay('可用指令：\n賣 XXX → 所有錢包全賣\n賣 XXX 一半 → 各賣一半\n（也可打「XXX 全出」「XXX 出一半」）\n餘額 → 看各錢包 BNB\n持倉 → 還沒賣的幣和現值\n戰績 → 上線以來打了多少、賣了多少');
       }
     } catch { await sleep(3000); }
@@ -1372,6 +1421,8 @@ async function main() {
   let lastHold = 0, lastLogin = 0;
   for (;;) {
     try { if (statSync(SELF).mtimeMs !== SELF_MT) { if (INFLIGHT > 0 && !globalThis._waitSince) globalThis._waitSince = Date.now(); if (INFLIGHT === 0 || Date.now() - (globalThis._waitSince || 0) > 240e3) { log('程序更新，重启'); save(); process.exit(0); } } } catch {} // 有交易正在送出就先等它送完（最多 4 分鐘）
+    if (UPD.on && existsSync(join(DIR, 'UPDATE'))) { try { unlinkSync(join(DIR, 'UPDATE')); } catch {} doUpdate().then((m) => { log(m); console.log('\n' + m + '\n'); tgSay(m); }).catch((e) => log('update ' + e.message)); }
+    if (UPD.on && (!globalThis._updAt || Date.now() - globalThis._updAt > 30 * 60e3)) { globalThis._updAt = Date.now(); updCheck().catch(() => {}); } // 每 30 分鐘看一次 GitHub 有沒有新版
     if (existsSync(join(DIR, 'WATCH_STOP'))) { log('WATCH_STOP，退出'); save(); process.exit(0); }
     try {
       const head = parseInt(await rpc('eth_blockNumber', []), 16);
@@ -1385,6 +1436,7 @@ async function main() {
       if (!globalThis._pruneAt || Date.now() - globalThis._pruneAt > 3600e3) { globalThis._pruneAt = Date.now(); pruneState(); }
       if (!globalThis._aidropAt || Date.now() - globalThis._aidropAt > 120e3) { globalThis._aidropAt = Date.now(); const tA = Date.now(); await aidropWatch(head); if (Date.now() - tA > 20e3) log(`aidrop 檢查花了 ${Math.round((Date.now() - tA) / 1000)} 秒`); }
       for (let k = 0; k < 3; k++) { const bk = '_paidBusy' + k, ak = '_paidAt' + k; if (!globalThis[bk] && (!globalThis[ak] || Date.now() - globalThis[ak] > 15e3)) { globalThis[ak] = Date.now(); globalThis[bk] = true; paidLoop('hot', k).catch((e) => log('paidLoop ' + e.message)).finally(() => { globalThis[bk] = false; globalThis._paidDur = Math.round((Date.now() - globalThis[ak]) / 1000); }); } } /* 快速檢查：每 15 秒，分 3 組同時跑 */
+      if (!globalThis._swBusy && (!globalThis._swAt || Date.now() - globalThis._swAt > 60e3)) { globalThis._swAt = Date.now(); globalThis._swBusy = true; progressSweep().catch((e) => log('sweep ' + e.message)).finally(() => { globalThis._swBusy = false; }); } // 每分鐘輕量讀進度
       if (!globalThis._restBusy && (!globalThis._restAt || Date.now() - globalThis._restAt > 60e3)) { globalThis._restAt = Date.now(); globalThis._restBusy = true; paidLoop('rest').catch((e) => log('paidRest ' + e.message)).finally(() => { globalThis._restBusy = false; }); } // 一般檢查：約每分鐘 // 背景跑，不卡住掃描
       if (!globalThis._smartBusy && Date.now() - (S.smartAt || 0) > 6 * 3600e3) { S.smartAt = Date.now(); globalThis._smartBusy = true; buildSmart().catch((e) => log('smart ' + e.message)).finally(() => { globalThis._smartBusy = false; }); }
       if (!globalThis._mmBusy && existsSync(join(DIR, 'data', 'manual_mint.json'))) { globalThis._mmBusy = true; manualMints().catch((e) => log('manual ' + e.message)).finally(() => { globalThis._mmBusy = false; }); }
