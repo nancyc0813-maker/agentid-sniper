@@ -860,6 +860,11 @@ async function heatWatch() { // 背景：替追蹤中的付費項目算熱度，
     } catch (e) { log('heat ' + c + ' ' + e.message); }
   }
 }
+function freshDeadline(data) { /* 照抄的交易裡如果有「期限」（看起來像時間戳記的數字），換成 15 分鐘後，不然舊交易一定過期失敗（币安无忧 10/31） */
+  const now = Math.floor(Date.now() / 1000); const ws = data.slice(10).match(/.{64}/g) || []; let ch = 0;
+  const out = ws.map((x) => { const v = BigInt('0x' + x); if (v > BigInt(now - 30 * 86400) && v < BigInt(now + 30 * 86400)) { ch = 1; return (BigInt(now + 900)).toString(16).padStart(64, '0'); } return x; });
+  return ch ? data.slice(0, 10) + out.join('') : data;
+}
 async function learnReplay(c) { // 學別人最近成功的鑄造：最常見的函式、要付多少 BNB／USDT、最近有幾個錢包在打
   const head = parseInt(await rpc('eth_blockNumber', []), 16);
   const L = await rpc('eth_getLogs', [{ address: c, fromBlock: '0x' + (head - 1500).toString(16), toBlock: 'latest' }]).catch(() => []);
@@ -933,6 +938,12 @@ async function paidLoop(mode = 'all') {
     let tokAddr0 = ''; { const tr0 = await cc(c, '0xfc0c546a', 3600e3); if (tr0 && tr0.length >= 66 && BigInt(tr0.slice(0, 66)) > 0n) tokAddr0 = '0x' + tr0.slice(26, 66); }
     let progress = cap && sold != null ? sold / cap : 0, how = '已售／上限';
     if (!(progress > 0)) { const pr = await progressOf(c, code, tokAddr0); progress = pr.progress || 0; how = pr.how || ''; }
+    /* 使用者 10/31 19:02：進度合理性檢查（币安人 把總量讀成 100 倍，進度 32% 被讀成 0.3%，別人打到我們沒打到）：讀到的進度很低、但已經很多人打 → 判定讀錯，改用庫存算法；還是不合理就當作讀不到，交給熱度規則 */
+    if (progress > 0 && progress < 0.03 && ((P.agents || 0) >= 50 || (sold || 0) >= 1000 || (HOT.get(c)?.from.size || 0) >= 15)) {
+      const pr = await progressOf(c, code, tokAddr0).catch(() => ({}));
+      if (pr.progress >= 0.03) { progress = pr.progress; how = pr.how || '庫存'; }
+      else { if (!P.progBad) { P.progBad = 1; log(`進度看起來讀錯了：${c} 讀到 ${(progress * 100).toFixed(2)}% 但已有 ${P.agents || 0} 個代理人在打，改用熱度規則判斷`); } progress = 0; how = '讀不到（數字不合理）'; }
+    }
     const prevProg = P.progress; P.progress = progress;
     if (progress >= 0.7 && progress <= 1 && (prevProg != null ? prevProg < 0.7 : Date.now() - P.at < 6 * 3600e3)) groupProgress(c, P.name, progress).catch(() => {});
     { const now = Date.now(); P.ph = (P.ph || []).filter((x) => now - x.t < 15 * 60e3); if (!P.ph.length || now - P.ph[P.ph.length - 1].t > 10e3) P.ph.push({ t: now, p: progress }); }
@@ -940,7 +951,7 @@ async function paidLoop(mode = 'all') {
     const forced = FORCE.has(c);
     
     const tier = heatTier(P), needPct = tier >= 2 ? 0.3 : tier >= 1 ? 0.4 : PAID.goPct;
-    const blindGo = !(progress > 0) && tier >= 1 && kind === 'replay';
+    const blindGo = !(progress > 0) && (tier >= 1 || (P.progBad && (sold || 0) >= 3000)) && (kind === 'replay' || P.progBad); /* 進度讀錯的項目：熱門，或已經被鑄了 3000 份以上，就照熱度規則跟打 */
     if (!forced && !(progress >= needPct || blindGo)) continue;
     if (!forced && !P.goLogged) { P.goLogged = 1; log(`進場 ${c}：${['一般', '熱', '超熱'][tier]}（累計 ${P.agents || 0} 個代理人、3 分鐘 ${P.burst || 0} 個），進度 ${progress > 0 ? Math.round(progress * 100) + '%' : '讀不到'}`); }
     // 防釣魚：① 同款合約 24 小時內被部署 3 次以上（批量發盤）不打 ② 進度要是很多人打出來的（至少 20 個不同錢包），不是項目方自己刷的
@@ -977,7 +988,8 @@ async function paidLoop(mode = 'all') {
         let n = 10, costWei = 0n;
         if (kind === 'replay' && P.replay.payTok) { // 付 USDT 的鑄造（像 BITO）：換 USDT → 授權 → 照別人的方式打，份數放大到預算內最多 10 份
           if (P.replay.payTok !== USDT) { if (!P.payTokLogged) { P.payTokLogged = 1; log(`跳過 ${c}：要付的代幣不是 USDT（${P.replay.payTok}）`); } return; }
-          let data = P.replay.data, need = BigInt(P.replay.payAmt || '0'); const ws = data.slice(10).match(/.{64}/g) || [];
+          if (Date.now() - (P.replay.learnedAt || 0) > 90e3) { const lr = await learnReplay(c).catch(() => null); if (lr) P.replay = { ...P.replay, ...lr }; }
+          let data = freshDeadline(P.replay.data), need = BigInt(P.replay.payAmt || '0'); const ws = data.slice(10).match(/.{64}/g) || [];
           if (ws.length === 3 && need > 0n) { const n0 = BigInt('0x' + ws[0]), mx = BigInt('0x' + ws[2]); if (n0 > 0n && n0 <= 100n && mx >= need && mx <= (need * 12n) / 10n) { const unit = need / n0; let nn = 10n; while (nn > 1n && Number(unit * nn) / 1e18 > PAID.maxUsd) nn--; const mp = (unit * nn * 105n) / 100n; data = data.slice(0, 10) + w(nn) + ws[1] + w(mp); need = mp; } }
           if (!(need > 0n) || Number(need) / 1e18 > PAID.maxUsd * 1.06) return;
           let ub = big(await call(USDT, '0x70a08231' + wa(W.addr)));
@@ -997,9 +1009,10 @@ async function paidLoop(mode = 'all') {
           return;
         }
         if (kind === 'replay') {
+          if (Date.now() - (P.replay.learnedAt || 0) > 90e3) { const lr = await learnReplay(c).catch(() => null); if (lr) P.replay = { ...P.replay, ...lr }; } /* 用最新的別人交易（價格參數要新） */
           const v = BigInt(P.replay.value || '0'); const vb = Number(v) / 1e18;
           if (!price || vb * price > PAID.maxUsd || vb * 1.005 > bal - PAID.keepBnb) return;
-          let rdata = P.replay.data; try { rdata = await safeAddrs(W, c, rdata, v); rdata = await fitShares(W, c, rdata, v); } catch { markUnmintable(c, P, sym, progress); return; } /* 審查修正：付 BNB 的照抄也要換掉別人的地址、自動調份數 */
+          let rdata = freshDeadline(P.replay.data); try { rdata = await safeAddrs(W, c, rdata, v); rdata = await fitShares(W, c, rdata, v); } catch { markUnmintable(c, P, sym, progress); return; } /* 審查修正：付 BNB 的照抄也要換掉別人的地址、自動調份數 */
           try { await rpc('eth_call', [{ from: W.addr, to: c, data: rdata, value: '0x' + v.toString(16) }, 'latest']); } catch { markUnmintable(c, P, sym, progress); return; }
           const r = await previewExec(W, c, rdata, v, (sim) => {
             const mine = (sim?.balanceChanges || []).filter((b) => String(b.owner).toLowerCase() === W.addr);
