@@ -119,7 +119,7 @@ async function dailyReport() { /* 新功能：每天晚上 9 點（台北）自�
   let um = 0; try { const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10).replace(/-/g, '/'); um = new Set(readFileSync(LOG, 'utf8').split('\n').filter((l) => l.startsWith('[' + today) && l.includes('] 打不了 ')).map((l) => (l.match(/0x[a-f0-9]{40}/) || [''])[0])).size; } catch {}
   const today2 = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10).replace(/-/g, '/'); const ms = Object.entries(S.missed || {}).filter(([, m]) => String(m.at).startsWith(today2)).slice(-8);
   const missTxt = ms.length ? `\n今天快賣完卻沒打到的 ${ms.length} 個：\n` + ms.map(([c, m]) => `· ${m.name}：${m.why}`).join('\n') : '\n今天沒有錯過快賣完的項目';
-  await tgSay(`🌙 每日總結（晚上 9 點自動發）${missTxt}\n今天有 ${um} 個項目打不了（要官網簽名、白名單或模擬失敗），只記在紀錄裡`); await cmdStats().catch(() => {}); await cmdHold().catch(() => {});
+  await tgSay(`🌙 每日總結（晚上 9 點自動發）${missTxt}\n今天有 ${um} 個項目打不了（要官網簽名、白名單或模擬失敗），只記在紀錄裡${UPD.on ? `\n\n官方群：${UPD.group}` : ''}`); await cmdStats().catch(() => {}); await cmdHold().catch(() => {});
 }
 async function lockNote(c, wAddr) { /* 買到的幣現在能不能轉：模擬轉 1 單位到黑洞地址，被擋就提醒（像 aiagentbsc 的白名單鎖）（使用者 10/30 21:44 要補的漏洞） */
   const toks = [...new Set([c, ...(S.dyn || []).filter((t) => t.only === wAddr).slice(-3).map((t) => t.addr)])];
@@ -1291,17 +1291,19 @@ async function manualMints() {
   }
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
-// ── 更新提醒（開源版才開；使用者 10/31 23:11：安全第一——只提醒，用戶回 /update 才更新；更新前安檢＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.4.1', repo: 'nancyc0813-maker/agentid-sniper' };
+// ── 自動更新（開源版才開；使用者 10/31 23:30：自動更新，安檢＋sha256＋備份照留，新版起不來自動換回；TG 回 /update 可手動觸發）──
+const UPD = { on: true, ver: '2.4.2', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 10/31 23:30：改成自動更新（安檢照留），並引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
   try {
     const r = await fetch(`https://raw.githubusercontent.com/${UPD.repo}/main/version.json?t=${Date.now()}`, { signal: AbortSignal.timeout(15000) }); if (!r.ok) return null;
     const v = await r.json(); if (!v.version || !verGt(v.version, UPD.ver)) return null; UPD.latest = v;
-    if (!quiet && S.updNotified !== v.version) {
-      S.updNotified = v.version; save();
-      const msg = `🔔 Agent ID Sniper 有新版 v${v.version}（你現在是 v${UPD.ver}）\n${(v.notes || []).map((x) => '• ' + x).join('\n')}\n\n要更新：在 TG 回「/update」，或在工具資料夾放一個名為 UPDATE 的空檔案。\n更新前會自動安檢、備份舊版；新版起不來會自動換回舊版。`;
+    if (!quiet && S.updTried !== v.version) { /* 自動更新：發現新版就自動下載、安檢、更新；安檢沒過就不更新，只通知 */
+      S.updTried = v.version; save();
+      const res = await doUpdate().catch((e) => '⚠️ 自動更新出錯：' + e.message);
+      const ok = res.startsWith('✅');
+      const msg = ok ? `🔔 Agent ID Sniper 已自動更新到 v${v.version}\n${(v.notes || []).map((x) => '• ' + x).join('\n')}\n\n更新通知、開盤播報都在官方群：${UPD.group}` : `⚠️ Agent ID Sniper 有新版 v${v.version}，但沒有自動更新：\n${res}\n\n請到官方群看說明：${UPD.group}`;
       log(msg.replace(/\n/g, ' | ')); console.log('\n' + '='.repeat(48) + '\n' + msg + '\n' + '='.repeat(48) + '\n'); await tgSay(msg);
     }
     return v;
@@ -1309,7 +1311,7 @@ async function updCheck(quiet = false) {
 }
 async function doUpdate() {
   if (!UPD.on) return '這個版本不自動更新';
-  const v = await updCheck(true); if (!v) return `目前已經是最新版 v${UPD.ver}`;
+  const v = UPD.latest && verGt(UPD.latest.version, UPD.ver) ? UPD.latest : await updCheck(true); if (!v) return `目前已經是最新版 v${UPD.ver}`;
   const r = await fetch(`https://raw.githubusercontent.com/${UPD.repo}/main/watch.mjs?t=${Date.now()}`, { signal: AbortSignal.timeout(60000) }).catch(() => null);
   if (!r || !r.ok) return '⚠️ 下載新版失敗，等一下再試';
   const buf = Buffer.from(await r.arrayBuffer()), code = buf.toString('utf8');
@@ -1327,6 +1329,7 @@ async function doUpdate() {
   log(`已更新到 v${v.version}（舊版備份在 data/update_backup.mjs）`);
   return `✅ 已更新到 v${v.version}，舊版已備份，工具會自動重啟載入。新版如果連續 3 次啟動失敗，會自動換回舊版。`;
 }
+async function groupInvite() { if (!UPD.on || S.grpInvited === 1) return; S.grpInvited = 1; save(); const msg = `👋 歡迎使用 Agent ID Sniper v${UPD.ver}\n加入官方 TG 群，第一時間收到：\n• 工具更新通知\n• 打到什麼項目、哪個開盤的即時播報\n• 使用教學與問題解答\n👉 ${UPD.group}`; log(msg.replace(/\n/g, ' | ')); console.log('\n' + '='.repeat(48) + '\n' + msg + '\n' + '='.repeat(48) + '\n'); await tgSay(msg); }
 if (UPD.on) setTimeout(() => { const b = join(DIR, 'data', 'update_backup.mjs'); if (existsSync(b)) { try { renameSync(b, join(DIR, 'data', 'backup_prev.mjs')); log('新版已穩定運行 10 分鐘，舊版備份改存為 data/backup_prev.mjs'); } catch {} } }, 10 * 60e3).unref();
 async function tgSay(text) { if (!TG) return; log('TG回覆: ' + text.replace(/\n/g, ' | ')); try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: TG.b, text, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {} }
 function findTok(q, W) {
@@ -1416,7 +1419,7 @@ async function tgCmdLoop() {
 let lastLoopAt = Date.now();
 setInterval(() => { if (Date.now() - lastLoopAt > (INFLIGHT > 0 ? 11 : 8) * 60e3) { log('看門狗：主迴圈卡住超過 8 分鐘，自動重啟'); try { save(); } catch {} process.exit(1); } }, 30e3).unref();
 async function main() {
-  log('启动监测');
+  log('启动监测'); setTimeout(() => groupInvite().catch(() => {}), 20e3);
   tgCmdLoop().catch((e) => log('tgCmd ' + e.message));
   let lastHold = 0, lastLogin = 0;
   for (;;) {
