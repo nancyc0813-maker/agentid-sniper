@@ -1014,7 +1014,7 @@ async function paidLoop(mode = 'all', shard = null) {
     const code = await codeOf(c);
     // 發現時還沒開的「免費」鑄造：之後每分鐘重試，一開就自動打
     const fcd = (P.progress || 0) >= 0.58 || Math.max(P.agents || 0, HOT.get(c)?.from.size || 0) >= 70 ? 20e3 : 120e3; /* 除錯 11/1：快到 60% 的免費項目改成 20 秒重試一次（之前固定 2 分鐘，0xa69adf 在這 2 分鐘內從 63% 賣完） */
-    if (Date.now() - (P.freeTryAt || 0) > fcd) { P.freeTryAt = Date.now(); for (const W of WALLETS) { if (P.done[W.name]) continue; { const ff = await findFree(W.addr, c, code); if (!ff || P.qAt?.[W.name] > Date.now() - (fcd - 5e3)) continue; P.qAt = P.qAt || {}; P.qAt[W.name] = Date.now(); queueMint(c, ff.n, W, ff.v); log(`[${W.name}] 之前還沒開的 ${P.name || c} 現在開了（免費），排入鑄造`); } } }
+    if (Date.now() - (P.freeTryAt || 0) > fcd && !((P.progress || 0) > 0 && P.progress < 0.58 && Date.now() - (P.freeTryAt || 0) < 600e3)) { /* 優化 11/1：進度讀得到且還沒到 58% 的免費項目，不用每 2 分鐘模擬一次（一晚 850 次白跑、還害節點限流）；改成 10 分鐘看一次，快到門檻才密集重試 */ P.freeTryAt = Date.now(); for (const W of WALLETS) { if (P.done[W.name]) continue; { const ff = await findFree(W.addr, c, code); if (!ff || P.qAt?.[W.name] > Date.now() - (fcd - 5e3)) continue; P.qAt = P.qAt || {}; P.qAt[W.name] = Date.now(); queueMint(c, ff.n, W, ff.v); log(`[${W.name}] 之前還沒開的 ${P.name || c} 現在開了（免費），排入鑄造`); } } }
     let kind = code.includes('e38fd349') && code.includes('68bce8cd') ? 'bnb' : code.includes('725c4058') && code.includes('94bf804d') ? 'usdt' : null;
     let unit = 0n; // 一般 NFT：mint(數量) 付「單價 × 數量」BNB（像 Sentient Syndicate 的 PRICE）
     if (!kind && code.includes('a0712d68')) for (const sel of ['8d859f3e', 'a035b1fe', '6817c76c', '13faede6', '817b1cd2']) { if (!code.includes(sel)) continue; const r = await cc(c, '0x' + sel); if (r && r.length >= 66 && BigInt(r.slice(0, 66)) > 0n) { unit = BigInt(r.slice(0, 66)); kind = 'gen'; break; } }
@@ -1029,10 +1029,10 @@ async function paidLoop(mode = 'all', shard = null) {
     let soldR = await call(c, kind === 'bnb' ? '0xa2309ff8' : kind === 'gen' ? '0x18160ddd' : '0x192fc516');
     if (!(soldR && soldR.length >= 66) && (kind === 'replay' || kind === 'recv')) { if (P.soldSel) soldR = await call(c, P.soldSel); else for (const sel of ['0x02c7e7af', '0xa2309ff8', '0x9106d7ba', '0xf4514d2e', '0x505e05fd', '0x3a98ef39']) { const r = await cc(c, sel, 60e3); if (r && r.length >= 66) { soldR = r; P.soldSel = sel; break; } } }
     const sold = soldR && soldR.length >= 66 ? Number(BigInt(soldR.slice(0, 66))) : null;
-    let cap = null; for (const sel of ['0xa0e23ebd', '0xd8f93498', '0xcef6feda', '0x29b80536', '0xd5abeb01', '0x32cb6b0c', '0x355274ea', '0x3a1d8d3a', '0xf1aee5a2', '0x85e3f997']) { const r = await cc(c, sel); if (r && r.length >= 66) { const x = Number(BigInt(r.slice(0, 66))); if (x > 0 && sold != null && x >= sold && x < 1e12) { cap = x; break; } } }
+    let cap = null; { const r = await cc(c, '0xa0e23ebd'); if (r && r.length >= 66 && sold != null) { const x = Number(BigInt(r.slice(0, 66))); if (x >= 1000 && x <= 1e7 && x % 100 === 0) cap = Math.max(x, sold); } } if (!cap) for (const sel of ['0xd8f93498', '0xcef6feda', '0x29b80536', '0xd5abeb01', '0x32cb6b0c', '0x355274ea', '0x3a1d8d3a', '0xf1aee5a2', '0x85e3f997']) { const r = await cc(c, sel); if (r && r.length >= 66) { const x = Number(BigInt(r.slice(0, 66))); if (x > 0 && sold != null && x >= sold && x < 1e12) { cap = x; break; } } }
     if (!cap && sold != null && sold > 0) { /* 審查 11/1：bibiai 發射台的總量函式不在常見清單（a0e23ebd=10000）→ 讀不到進度 → 被當成「讀不到＋很多人打」在 4% 就可能買；改成自動從合約裡找「總量」函式並記住 */
       if (P.capSel === undefined) P.capSel = await findCapSel(c, code, sold).catch(() => '') || '';
-      if (P.capSel) { const r = await cc(c, '0x' + P.capSel, 600e3); if (r && r.length >= 66) { const x = Number(BigInt(r.slice(0, 66))); if (x > 0 && x >= sold && x < 1e9) cap = x; } }
+      if (P.capSel) { const r = await cc(c, '0x' + P.capSel, 600e3); if (r && r.length >= 66) { const x = Number(BigInt(r.slice(0, 66))); if (x > 0 && x < 1e9) cap = Math.max(x, sold); } } /* 已售超過總量＝賣完（AID 賣到 10246／10000 時被讀成 0.23%） */
     }
     let tokAddr0 = ''; { const tr0 = await cc(c, '0xfc0c546a', 3600e3); if (tr0 && tr0.length >= 66 && BigInt(tr0.slice(0, 66)) > 0n) tokAddr0 = '0x' + tr0.slice(26, 66); }
     let progress = cap && sold != null ? sold / cap : 0, how = '已售／上限';
@@ -1044,7 +1044,7 @@ async function paidLoop(mode = 'all', shard = null) {
       else { if (!P.progBad) { P.progBad = 1; log(`進度看起來讀錯了：${c} 讀到 ${(progress * 100).toFixed(2)}% 但已有 ${P.agents || 0} 個代理人在打，改用熱度規則判斷`); } progress = 0; how = '讀不到（數字不合理）'; }
     }
     const prevProg = P.progress; P.progress = progress; P.progAt = Date.now();
-    if (progress >= 0.95 && !WALLETS.some((W) => P.done[W.name] && !['pool-open', 'fail', 'unknown'].includes(P.done[W.name]))) { S.missed = S.missed || {}; if (!S.missed[c]) { S.missed[c] = { name: P.name || c.slice(0, 10), at: ts(), why: P.lastReason || (P.unmintable ? '打不了' : '還沒找到能打的方式') }; log(`錯過 ${c}（${S.missed[c].name}）：進度已 ${Math.round(progress * 100)}%，我們沒打到，原因：${S.missed[c].why}`); } } /* 讓自己更聰明：記下快賣完卻沒打到的項目和原因，每晚總結列出來，方便找出要補的漏洞 */
+    if (progress >= 0.95 && !P.noRefundLog && !WALLETS.some((W) => P.done[W.name] && !['pool-open', 'fail', 'unknown'].includes(P.done[W.name]))) { /* 照規則不打（沒有保本）的不算錯過 */ S.missed = S.missed || {}; if (!S.missed[c]) { S.missed[c] = { name: P.name || c.slice(0, 10), at: ts(), why: P.lastReason || (P.unmintable ? '打不了' : '還沒找到能打的方式') }; log(`錯過 ${c}（${S.missed[c].name}）：進度已 ${Math.round(progress * 100)}%，我們沒打到，原因：${S.missed[c].why}`); } } /* 讓自己更聰明：記下快賣完卻沒打到的項目和原因，每晚總結列出來，方便找出要補的漏洞 */
     if (progress >= 0.7 && progress <= 1 && (prevProg != null ? prevProg < 0.7 : Date.now() - P.at < 6 * 3600e3)) groupProgress(c, P.name, progress).catch(() => {});
     { const now = Date.now(); P.ph = (P.ph || []).filter((x) => now - x.t < 15 * 60e3); if (!P.ph.length || now - P.ph[P.ph.length - 1].t > 10e3) P.ph.push({ t: now, p: progress }); }
     price = price || (await bnbUsd());
@@ -1339,7 +1339,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.5.3', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.5.4', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
