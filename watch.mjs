@@ -930,7 +930,7 @@ async function heatWatch() { // 背景：替追蹤中的付費項目算熱度，
   for (const [c, P] of ents) {
     try {
       await heatOf(c, P);
-      if (P.needLearn && (!P.replay || Date.now() - (P.replay.learnedAt || 0) > 120e3) && (heatTier(P) >= 1 || (P.progress || 0) >= 0.2 || (P.agents || 0) >= 20)) { const lr = await learnReplay(c).catch(() => null); if (lr) P.replay = lr; }
+      if (P.needLearn && (!P.replay || Date.now() - (P.replay.learnedAt || 0) > 120e3) && (heatTier(P) >= 1 || (P.progress || 0) >= 0.2 || (P.agents || 0) >= 20)) { const lr = await learnReplay(c).catch(() => null); if (lr?.recv) { P.recvValue = lr.recv; P.recvSeen = lr.recvSeen; P.recvVals = lr.recvVals; P.replay = { hot: lr.hot, learnedAt: lr.learnedAt }; delete P.needLearn; log(`學到 ${P.name || c} 的打法：直接轉 ${Number(BigInt(lr.recv)) / 1e18} BNB 就鑄造（${lr.recvSeen} 筆）`); } else if (lr) P.replay = lr; }
     } catch (e) { log('heat ' + c + ' ' + e.message); }
   }
 }
@@ -943,7 +943,12 @@ async function learnReplay(c) { // 學別人最近成功的鑄造：最常見的
   const head = parseInt(await rpc('eth_blockNumber', []), 16);
   const L = await rpc('eth_getLogs', [{ address: c, fromBlock: '0x' + (head - 1500).toString(16), toBlock: 'latest' }]).catch(() => []);
   const hs = [...new Set((L || []).map((l) => l.transactionHash))].slice(-40);
-  const txs = (await Promise.all(hs.map((h) => rpc('eth_getTransactionByHash', [h]).catch(() => null)))).filter((t) => t && t.to && t.to.toLowerCase() === c && t.input && t.input.length >= 10 && !badSel(t.input) && !t.input.toLowerCase().includes(t.from.slice(2).toLowerCase()));
+  const all = (await Promise.all(hs.map((h) => rpc('eth_getTransactionByHash', [h]).catch(() => null)))).filter((t) => t && t.to && t.to.toLowerCase() === c);
+  const txs = all.filter((t) => t.input && t.input.length >= 10 && !badSel(t.input) && !t.input.toLowerCase().includes(t.from.slice(2).toLowerCase()));
+  { /* 除錯 11/1：BNBCAT 這種「直接轉 BNB 就鑄造」的合約，別人的交易沒有呼叫資料，以前學不到 → 進度過 55% 也一直沒打。現在學「大家最常轉的金額」 */
+    const plain = all.filter((t) => (t.input || '0x') === '0x' && BigInt(t.value || '0x0') > 0n);
+    if (plain.length >= 3 && plain.length >= txs.length) { const vc = {}; for (const t of plain) { const v = BigInt(t.value).toString(); vc[v] = (vc[v] || 0) + 1; } const top = Object.entries(vc).sort((x, y) => y[1] - x[1])[0]; const hot = new Set(plain.filter((t) => parseInt(t.blockNumber, 16) >= head - 400).map((t) => t.from.toLowerCase())).size; return { recv: top[0], recvSeen: top[1], recvVals: Object.keys(vc), hot, learned: 1, learnedAt: Date.now() }; }
+  }
   if (!txs.length) return null;
   const cnt = {}; for (const t of txs) cnt[t.input.slice(0, 10)] = (cnt[t.input.slice(0, 10)] || 0) + 1;
   const sel = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0][0];
@@ -1110,7 +1115,10 @@ async function paidLoop(mode = 'all', shard = null) {
           return;
         }
         if (kind === 'recv') {
-          const v = BigInt(P.recvValue); const vb = Number(v) / 1e18;
+          let v = BigInt(P.recvValue);
+          if (price && (Number(v) / 1e18) * price > PAID.maxUsd) { /* 除錯 11/1：大家最常轉的金額超過 20U 預算（BNBCAT 10 份＝0.03 BNB≈21U）時，改用別人轉過、在預算內最大的金額，不再直接放棄 */
+            const ok = (P.recvVals || []).map((x) => BigInt(x)).filter((x) => (Number(x) / 1e18) * price <= PAID.maxUsd).sort((x, y) => (x > y ? -1 : 1)); if (ok.length) v = ok[0]; }
+          const vb = Number(v) / 1e18;
           if (!price || vb * price > PAID.maxUsd || vb * 1.005 > bal - PAID.keepBnb) return;
           try { await rpc('eth_call', [{ from: W.addr, to: c, value: '0x' + v.toString(16) }, 'latest']); } catch { noteFail(c, P, sym, progress); return; } // 不能鑄（沒資格、已打過、額度滿）
           const r = await previewExec(W, c, '0x', v, (sim) => {
@@ -1299,7 +1307,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.4.6', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.4.7', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
