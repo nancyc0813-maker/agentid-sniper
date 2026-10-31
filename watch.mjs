@@ -39,7 +39,7 @@ let TG = null;
 const isFreeMintNote = (t) => /^🆓/u.test(t) || (/^🆕/u.test(t) && t.includes('🤖 已自動鑄造'));
 const important = (t) => !isFreeMintNote(t) && (/^(⏰|⚠️|🔑|💰|🔥|🚀|🦋|🏗|🛒)/u.test(t) || t.includes('不是免費')); 
 
-const sendable = (t) => /^(💰|🛒|🔑|⏰|🦋)/u.test(t) || (CONFIG.notifyFree && isFreeMintNote(t)) /* 免費項目預設不發 TG，只算進戰績和每晚 9 點總結；config 設 notifyFree: true 會靜音發送 */ || (/^🚀/u.test(t) && (t.includes('開池') || t.includes('平台幣'))) || (/^🔥/u.test(t) && /\d+ 倍/.test(t) && !t.includes('搶打')) || (/^⚠️/u.test(t) && /(想賣但失敗|回調|回落|登入|開發者模式|打不了|自動打失敗|掃描落後|結果不明|BNB 快不夠|賣不出|貔貅|Flap)/.test(t));
+const sendable = (t) => /^(💰|🔑|⏰|🦋)/u.test(t) /* 使用者 10/31 05:11：免費項目不發個人 TG；10/31 21:17：打到項目（🛒）和開盤（🚀）只發大群，不發個人 TG（一直響） */ || (/^🚀/u.test(t) && t.includes('平台幣')) || (/^🔥/u.test(t) && /\d+ 倍/.test(t) && !t.includes('搶打')) || (/^⚠️/u.test(t) && /(想賣但失敗|回調|回落|登入|開發者模式|打不了|自動打失敗|掃描落後|結果不明|BNB 快不夠|賣不出|貔貅|Flap)/.test(t));
 
 const GROUP_ID = CONFIG.telegram?.groupChatId || ''; // 可選：也發到 TG 群（買入、開池、倍數、賣出）
 const groupSent = new Map();
@@ -53,6 +53,7 @@ async function toGroup(text) {
   if (!msg && /^🆓/u.test(text)) { const name = (text.match(/項目[：:]\s*([^\n（(]+)/) || [])[1]?.trim() || ''; msg = `🎁 打了免费项目：${name || '新项目'}\n合约：${ca}`; key = 'free:' + ca.toLowerCase(); }
   if (!msg && /^🚀/u.test(text) && text.includes('開池')) { const sym = (text.match(/^🚀\s*(\S+)/u) || [])[1] || ''; const tok = (text.match(/合約 (0x[a-fA-F0-9]{40})/) || [])[1] || ca; msg = `🚀 ${sym} 开盘了${(text.match(/開池了（([^）]+)）/) || [])[1] ? '（' + text.match(/開池了（([^）]+)）/)[1].replace('配對', '配对') + '）' : ''}\n合约：${tok}`; key = 'open:' + tok.toLowerCase(); }
   if (!msg || !ca) return;
+  { const cl = ca.toLowerCase(); S.grpOnce = S.grpOnce || {}; if (!key.startsWith('open:')) { if (S.grpOnce[cl]) return; S.grpOnce[cl] = 1; } } /* 同一個合約群裡只播一次（打到／70% 擇一，開盤另外播） */
   const now = Date.now(); if (groupSent.has(key) && now - groupSent.get(key) < 6 * 3600e3) return; groupSent.set(key, now);
   try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text: '📡 Agent ID 播报\n' + msg, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {}
 }
@@ -72,7 +73,9 @@ async function freeProgWatch() { // 免費項目也看鑄造進度（已鑄造�
 async function groupProgress(c, name, pct) { // 任何項目（免費或付費、有沒有打都算）鑄造進度第一次超過 70% → 播報到群，同一個項目只發一次
   S.g70 = S.g70 || {}; if (!TG || !GROUP_ID || S.g70[c]) return;
   try { const d = S.deployer?.[c] || (await deployerOf(c)); if (d && (S.black?.[d] || S.paid?.[c]?.drain)) { S.g70[c] = 'skip'; return; } } catch {} /* 審查修正：黑名單/抽走過資金的開發者，不推給群 */
-  S.g70[c] = ts();
+  S.g70[c] = 'wait'; await sleep(90e3); /* 使用者 10/31 21:18：同一個項目群裡只播一次——先等 90 秒，期間如果我們打到了，就只發「打了」那則 */
+  if (S.grpOnce?.[c]) { S.g70[c] = 'merged'; return; }
+  S.g70[c] = ts(); S.grpOnce = S.grpOnce || {}; S.grpOnce[c] = 1;
   const text = `📡 Agent ID 播报\n🔥 ${name || '新项目'} 铸造进度已超过 70%（目前 ${Math.round(pct * 100)}%）\n合约：${c}`;
   log('群播報: ' + text.replace(/\n/g, ' | '));
   try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {}
@@ -105,7 +108,7 @@ async function lowBnbWatch() { /* 新功能：BNB 快不夠付 gas 時提醒（�
 }
 function pruneState() { /* 審查修正：狀態檔定期瘦身，避免越來越大、越存越慢 */
   const cut = (o, max) => { const k = Object.keys(o || {}); if (k.length > max) for (const x of k.slice(0, k.length - max)) delete o[x]; };
-  cut(S.seenMints, 30000); cut(S.g70, 3000); cut(S.deployer, 20000);
+  cut(S.seenMints, 30000); cut(S.g70, 3000); cut(S.grpOnce, 5000); cut(S.deployer, 20000);
   if (S.trades?.length > 1000) S.trades = S.trades.slice(-1000);
   for (const st of Object.values(S.tokens || {})) if (st.holders) cut(st.holders, 20000);
 }
@@ -117,7 +120,7 @@ async function dailyReport() { /* 新功能：每天晚上 9 點（台北）自�
 }
 async function lockNote(c, wAddr) { /* 買到的幣現在能不能轉：模擬轉 1 單位到黑洞地址，被擋就提醒（像 aiagentbsc 的白名單鎖）（使用者 10/30 21:44 要補的漏洞） */
   const toks = [...new Set([c, ...(S.dyn || []).filter((t) => t.only === wAddr).slice(-3).map((t) => t.addr)])];
-  for (const t of toks) { const b = big(await call(t, '0x70a08231' + wa(wAddr))); if (!(b > 0n)) continue;
+  for (const t of toks) { const dR = await call(t, '0x313ce567'); if (!(dR && dR.length >= 66)) continue; /* NFT 沒有小數位數，不能用轉代幣的方式測（以前 NFT 會誤報轉不出去） */ const b = big(await call(t, '0x70a08231' + wa(wAddr))); if (!(b > 0n)) continue;
     try { await rpc('eth_call', [{ from: wAddr, to: t, data: '0xa9059cbb' + wa('0x000000000000000000000000000000000000dead') + w(1n) }, 'latest']); return ''; }
     catch (e) { return `\n⚠️ 這個幣現在轉不出去（${String(e.message).slice(0, 40)}）：可能要等開發者開放交易，也可能是貔貅`; } }
   return '';
