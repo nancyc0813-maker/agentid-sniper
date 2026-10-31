@@ -2,7 +2,7 @@
 // 全部在本地跑：掃 BSC 新合約 → 模擬 → 用 baw CLI 自動打 → 開池後照規則自動賣 → Telegram 通知。不使用任何 AI。
 // 停止：在同資料夾放 WATCH_STOP 檔。設定見 config.example.json。
 import { execFile } from 'node:child_process';
-import { appendFileSync, writeFileSync, readFileSync, existsSync, statSync, renameSync, copyFileSync, unlinkSync } from 'node:fs';
+import { appendFileSync, writeFileSync, readFileSync, existsSync, statSync, renameSync, copyFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -821,6 +821,7 @@ async function fitShares(W, c, data, v) { // 份數：先讀項目方開放幾�
   }
   return data;
 }
+const REFUND_SELS = ['590e1ae3', 'b5545a3c', '278ecde1', '5b7baf64', '110f8874', '16bfe25c', '38e771ab', 'b2d5ae44', 'fa89401a', 'bffa55d5', '68ec0d99', '74c1b1c9', 'b30196e5', 'c033a490', '4c4a386f', 'd233e4eb']; // 退款相關函式：refund()、claimRefund()、refundOpen()、refundable(address)…
 const scaleV = (d0, d1, v) => { /* 份數從 d0 的第一個參數變成 d1 的，金額按比例調整 */ try { const a = BigInt('0x' + d0.slice(10, 74)), b = BigInt('0x' + d1.slice(10, 74)); if (a >= 1n && a <= 100n && b >= 1n && b < a) return (BigInt(v) * b) / a; } catch {} return BigInt(v); };
 async function safeAddrs(W, c, data, v) { 
   let ws = data.slice(10).match(/.{64}/g) || []; const me = W.addr.slice(2).toLowerCase();
@@ -1051,6 +1052,11 @@ async function paidLoop(mode = 'all', shard = null) {
     const tier = heatTier(P), needPct = 0.55; /* 使用者 11/1 00:39：進度超過 55% 就打（原 60%） */
     const crowdGo = !(progress > 0) && (P.agents || 0) >= 100; /* 審查 11/1：只算持有 Agent ID 的錢包（熱度名單含一般地址，可能被機器人灌） */ /* 使用者 10/31 19:45：讀不到進度 → 100 個以上錢包在打就打 */
     if (!forced && !(progress >= needPct || crowdGo)) continue;
+    { /* 使用者 11/1 01:56：風險變大了——付費項目一定要有保本機制（打不滿可以退款），沒有就不打。看合約（含代理背後的實作）有沒有退款函式 */
+      const paying = !(kind === 'replay' && !(BigInt(P.replay?.value || '0') > 0n) && !P.replay?.payTok);
+      if (!forced && paying && P.refundOk == null) { const fc = await fullCode(c, code).catch(() => code); P.refundOk = REFUND_SELS.some((x) => fc.includes(x)) ? 1 : 0; } /* 代理合約要看背後的實作 */
+      if (!forced && paying && !P.refundOk) { if (!P.noRefundLog) { P.noRefundLog = 1; P.lastReason = '沒有保本（退款）機制，照規則不打'; log(`跳過 ${P.name || c}：付費項目沒有保本（退款）機制，照規則不打`); } continue; }
+    }
     const gate = forced || progress >= 0.55 || crowdGo; /* 進度過 50%：之前的防釣魚規矩全部不看（只留貔貅類安全檢查：模擬、授權、資產、Flap） */
     if (!forced && !P.goLogged) { P.goLogged = 1; log(`進場 ${c}：${progress >= 0.55 ? '進度過 55%' : '讀不到進度、100 個以上錢包在打'}（累計 ${P.agents || 0} 個代理人、3 分鐘 ${P.burst || 0} 個），進度 ${progress > 0 ? Math.round(progress * 100) + '%' : '讀不到'}`); }
     // 防釣魚：① 同款合約 24 小時內被部署 3 次以上（批量發盤）不打 ② 進度要是很多人打出來的（至少 20 個不同錢包），不是項目方自己刷的
@@ -1328,7 +1334,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.5.0', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.5.1', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
