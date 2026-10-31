@@ -26,11 +26,10 @@ const T_SWAP = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d8
 const TOKENS = (CONFIG.tokens || []).map((t) => ({ ...t, addr: t.addr.toLowerCase() }));
 // 賣出規則（付費幣到價就執行；免費幣只通知），可在 config.json 的 rules 覆寫
 const RULE = {
-  backX: 3, halfX: [5, 10], crash: 0.6,   // 3 倍賣回本錢；5 倍、10 倍各賣剩下一半；從最高回落 60% 全賣
-  fastMin: 30, fastCrash: 0.35,           // 速戰模式：開池 30 分鐘內，從最高回落 35% 就全賣
-  noPumpMin: 20, noPumpX: 2,              // 開池 20 分鐘還沒到 2 倍 → 全賣
-  stallSec: 300, drop: 0.5,               // 免費幣：回調 50% 通知
-  notifyX: [5, 10],
+  backX: 3, steps: [[5, 50], [10, 50]], crash: 0.6,   // 3 倍賣回本錢；5 倍、10 倍各賣剩下的 50%；其餘從最高回落 60% 全賣（steps = [[倍數, 賣出%], …]）
+  fastMin: 30, fastCrash: 0.6,            // 開池 30 分鐘內檢查得比較密
+  stallSec: 300, drop: 0.5,               // 免費幣：從最高回落 50% 全賣
+  notifyX: [5, 10, 20],
   ...(CONFIG.rules || {}),
 };
 
@@ -92,7 +91,7 @@ async function riskNote(c) { /* 新功能：看合約有沒有「增發／暫停
     return '\n⚠️ 合約權限提醒：' + f.join('、') + '（開發者還沒放棄權限）';
   } catch { return ''; } }
 async function honeypotCheck(W, t, st, bal) { /* 新功能：開池時模擬「把幣轉進池子」（賣出第一步），轉不過去很可能是貔貅 */
-  if (st.hpChecked || !st.pair || !(bal > 0n)) return; st.hpChecked = 1;
+  if (st.hpChecked || !st.pair || !/^0x[0-9a-f]{40}$/.test(st.pair) || !(bal > 0n)) return; st.hpChecked = 1;
   try { await rpc('eth_call', [{ from: W.addr, to: t.addr, data: '0xa9059cbb' + wa(st.pair) + w(bal / 100n || 1n) }, 'latest']); }
   catch (e) { await tg(`⚠️ [${W.name}] ${t.sym} 開池了，但模擬賣出失敗，可能是貔貅（只能買不能賣），自動賣出可能會失敗\n${t.addr}`); }
 }
@@ -184,7 +183,16 @@ const dsCache = new Map();
 async function dexScreener(addr) { /* 使用者 10/31 19:55：不管跟什麼幣配對、在哪個 DEX（V2／V3／其他），都要查得到開盤——用 DexScreener 當保險（60 秒快取） */
   const k = dsCache.get(addr); if (k && Date.now() - k.t < 60e3) return k.v;
   let v = null; try { const j = await (await fetch('https://api.dexscreener.com/latest/dex/tokens/' + addr, { signal: AbortSignal.timeout(10000) })).json(); const ps = (j.pairs || []).filter((p) => p.chainId === 'bsc' && String(p.baseToken?.address || '').toLowerCase() === addr && (p.liquidity?.usd || 0) > 50); if (ps.length) { ps.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)); const p = ps[0]; v = { pair: String(p.pairAddress).toLowerCase(), dex: p.dexId + (p.labels?.length ? ' ' + p.labels.join('') : ''), quote: p.quoteToken?.symbol || '', px: Number(p.priceUsd) || 0, liq: p.liquidity?.usd || 0 }; } } catch {}
+  if (!v) v = await geckoPool(addr); /* 除錯 11/1：NOV 的池子開在 PancakeSwap Infinity，DexScreener 一直沒收錄，工具以為沒開盤、也讀不到價格 → 再用 GeckoTerminal 查（Infinity、Uniswap v4、V3 都有） */
   dsCache.set(addr, { t: Date.now(), v }); return v;
+}
+async function geckoPool(addr) {
+  try {
+    const j = await (await fetch(`https://api.geckoterminal.com/api/v2/networks/bsc/tokens/${addr}/pools`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10000) })).json();
+    const ps = (j.data || []).map((p) => { const a = p.attributes || {}, base = String(p.relationships?.base_token?.data?.id || '').toLowerCase().endsWith(addr); return { id: String(a.address || '').toLowerCase(), name: a.name || '', dex: String(p.relationships?.dex?.data?.id || 'gecko'), px: Number(base ? a.base_token_price_usd : a.quote_token_price_usd) || 0, liq: Number(a.reserve_in_usd) || 0 }; }).filter((x) => x.px > 0 && x.liq > 50).sort((x, y) => y.liq - x.liq);
+    if (!ps.length) return null; const p = ps[0];
+    return { pair: /^0x[0-9a-f]{40}$/.test(p.id) ? p.id : 'gt:' + p.id, dex: p.dex, quote: (p.name.split('/')[1] || '').trim().split(' ')[0], px: p.px, liq: p.liq };
+  } catch { return null; }
 }
 async function poolOpen(tk) { /* 有沒有已經開池（任何配對、任何 DEX）：V2 常見報價幣＋DexScreener（審查修正） */
   for (const q of [WBNB, USDT, USD1, ...XQ]) { const pr = await cc(FACTORY, '0xe6a43905' + wa(tk) + wa(q), 60e3); if (pr && BigInt(pr) > 0n) { const rs = await call('0x' + pr.slice(26), '0x0902f1ac'); if (rs && BigInt('0x' + rs.slice(2, 66)) > 0n) return true; } }
@@ -207,7 +215,7 @@ async function flow(t, st, from, to) { // 新錢包數、成交筆數
     const tr = await rpc('eth_getLogs', [{ address: t.addr, topics: [T_TRANSFER], fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16) }]);
     st.holders = st.holders || {}; let fresh = 0;
     for (const l of tr) { const toA = '0x' + l.topics[2].slice(26); if (!st.holders[toA]) { st.holders[toA] = 1; fresh++; } }
-    let swaps = 0; if (st.pair) swaps = (await rpc('eth_getLogs', [{ address: st.pair, topics: [T_SWAP], fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16) }])).length;
+    let swaps = 0; if (st.pair && /^0x[0-9a-f]{40}$/.test(st.pair)) swaps = (await rpc('eth_getLogs', [{ address: st.pair, topics: [T_SWAP], fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16) }])).length;
     return { fresh, swaps };
   } catch { return { fresh: 0, swaps: 0 }; }
 }
@@ -281,7 +289,7 @@ async function holdW(W, head, onlyFast) { // 所有錢包同時跑（速戰：�
     if (st.stage >= 9) { st.last = { v, at: ts() }; continue; }
     if (st.sellFail && now - (st.sellFailAt || 0) < Math.min(15, 2 ** (st.sellFail - 1)) * 60e3) { st.last = { v, at: ts() }; continue; } // 賣不掉：1、2、4…最多 15 分鐘後再試，不狂重試
     st.notified = st.notified || [];
-    if (t.cost > 0 && !t.hold && !t.custom) for (const x of RULE.notifyX) if (vFull >= t.cost * x && !st.notified.includes(x)) { st.notified.push(x); await tg(`🔥 [${W.name}] ${t.sym} 到 ${x} 倍了！（成本 ${t.cost}U，現在持倉約 ${v.toFixed(2)}U）\n照規則：3 倍賣回本、5 倍和 10 倍各賣一半、從最高價回落 ${Math.round(RULE.crash * 100)}% 全賣（開池 ${RULE.fastMin} 分鐘內回落 ${Math.round(RULE.fastCrash * 100)}%）`); }
+    if (t.cost > 0 && !t.hold && !t.custom) for (const x of RULE.notifyX) if (vFull >= t.cost * x && !st.notified.includes(x)) { st.notified.push(x); await tg(`🔥 [${W.name}] ${t.sym} 到 ${x} 倍了！（成本 ${t.cost}U，現在持倉約 ${v.toFixed(2)}U）\n照規則：2 倍賣回本、10 倍賣 30%、20 倍再賣 50%，其餘從最高價回落 ${Math.round(RULE.crash * 100)}% 全賣`); }
     if (t.sellNow) { if (!st.sellNowDone) { if (await sell(t, st, bal, '你指示全部賣出', W)) { st.sellNowDone = true; st.stage = 9; } } continue; }
     if (!(t.cost > 0) || t.hold) { // 免費的、或使用者說先別賣的
       if (!st.basePx) st.basePx = px; // 免費幣以開池後第一個價格當基準
@@ -297,6 +305,7 @@ async function holdW(W, head, onlyFast) { // 所有錢包同時跑（速戰：�
     st.done2 = st.done2 || [];
     if (t.custom === 'fist') { /* 使用者 10/31 20:39：FISTAGENT 特殊規則——5 倍賣回本錢、10 倍賣 30%、20 倍以上只發 TG 通知，其他自動賣出規則都不用 */
       const xNow = vFull / t.cost;
+      if (xNow < 0.5 && !st.done2.includes('cw')) { st.done2.push('cw'); await tg(`⚠️ [${W.name}] FISTAGENT 跌破成本一半了（成本 ${t.cost}U，現在約 ${v.toFixed(2)}U）\n你的設定沒有「暴跌就賣」，不會自動賣；要賣在 TG 打「賣 FISTAGENT」`); } /* 除錯 11/1：只有上漲目標的特殊規則沒有任何下跌提醒，NOV 跌 88% 都沒通知 */
       if (xNow >= 5 && !st.done2.includes('f5')) { const part = (bal * BigInt(Math.max(1, Math.min(100, Math.ceil((t.cost / v) * 100))))) / 100n; if (await sell(t, st, part, `FISTAGENT 到 5 倍，賣回本錢 ${t.cost}U（持倉約 ${v.toFixed(2)}U）`, W)) st.done2.push('f5'); }
       else if (xNow >= 10 && !st.done2.includes('f10')) { if (await sell(t, st, (bal * 30n) / 100n, `FISTAGENT 到 10 倍，賣出 30%（持倉約 ${v.toFixed(2)}U）`, W)) st.done2.push('f10'); }
       else if (xNow >= 20 && !st.done2.includes('f20')) { st.done2.push('f20'); await tg(`🔥 [${W.name}] FISTAGENT 到 ${Math.floor(xNow)} 倍了！（成本 ${t.cost}U，現在持倉約 ${v.toFixed(2)}U）\n照你的設定 20 倍以上不自動賣，要賣在 TG 打「賣 FISTAGENT」或「賣 FISTAGENT 一半」`); }
@@ -304,22 +313,19 @@ async function holdW(W, head, onlyFast) { // 所有錢包同時跑（速戰：�
     }
     if (t.custom === 'nova') { /* 使用者 10/31 23:18：NOVA 5 倍賣回本錢，10 倍發 TG 通知，不自動賣其他 */
       const xNow = vFull / t.cost;
+      if (xNow < 0.5 && !st.done2.includes('cw')) { st.done2.push('cw'); await tg(`⚠️ [${W.name}] NOVA 跌破成本一半了（成本 ${t.cost}U，現在約 ${v.toFixed(2)}U）\n你的設定沒有「暴跌就賣」，不會自動賣；要賣在 TG 打「賣 NOV」`); } /* 除錯 11/1：只有上漲目標的特殊規則沒有任何下跌提醒，NOV 跌 88% 都沒通知 */
       if (xNow >= 5 && !st.done2.includes('n5')) { const part = (bal * BigInt(Math.max(1, Math.min(100, Math.ceil((t.cost / v) * 100))))) / 100n; if (await sell(t, st, part, `NOVA 到 5 倍，賣回本錢 ${t.cost}U（持倉約 ${v.toFixed(2)}U）`, W)) st.done2.push('n5'); }
       else if (xNow >= 10 && !st.done2.includes('n10')) { st.done2.push('n10'); await tg(`🔥 [${W.name}] NOVA 到 ${Math.floor(xNow)} 倍了！（成本 ${t.cost}U，現在持倉約 ${v.toFixed(2)}U）\n照你的設定不自動賣，要賣在 TG 打「賣 NOV」或「賣 NOV 一半」`); }
       st.last = { v, at: ts() }; continue;
     }
-    const age = now - (st.openAt || 0), fast = age < RULE.fastMin * 60e3;
-    const crash = fast ? RULE.fastCrash : RULE.crash;
+    const crash = RULE.crash; /* 使用者 11/1 00:30：拿掉「開池 20 分鐘沒到 2 倍全賣」和速戰 35%，一律從最高點回落 40% 全賣 */
     if (st.ppeak > 0 && px < st.ppeak * (1 - crash)) {
-      if (!st.done2.includes('back') && t0.deployer) blacklist(t0.deployer, `${t.sym} 還沒回本就崩`);
-      if (await sell(t, st, bal, `${fast ? '速戰模式：' : ''}從最高價回落 ${Math.round(crash * 100)}%，全部賣出（約 ${v.toFixed(2)}U）`, W)) st.stage = 9;
-    } else if (st.openAt && age > RULE.noPumpMin * 60e3 && st.ppeak * st.qty0 < t.cost * RULE.noPumpX && !st.done2.includes('back')) {
-      if (await sell(t, st, bal, `開池 ${RULE.noPumpMin} 分鐘還沒到 ${RULE.noPumpX} 倍，判斷沒行情，全部賣出（約 ${v.toFixed(2)}U）`, W)) st.stage = 9;
+      if (await sell(t, st, bal, `從最高價回落 ${Math.round(crash * 100)}%，全部賣出（約 ${v.toFixed(2)}U）`, W)) st.stage = 9;
     } else if (!st.done2.includes('back') && vFull >= t.cost * RULE.backX) {
       const pct = Math.min(100, Math.ceil((t.cost / v) * 100 * 1.03));
       if (await sell(t, st, (bal * BigInt(pct)) / 100n, `到 ${RULE.backX} 倍，賣 ${pct}% 拿回本錢 ${t.cost}U（持倉約 ${v.toFixed(2)}U）`, W)) st.done2.push('back');
-    } else for (const x of RULE.halfX) {
-      if (!st.done2.includes('h' + x) && vFull >= t.cost * x) { if (await sell(t, st, bal / 2n, `到 ${x} 倍，賣出一半（持倉約 ${v.toFixed(2)}U）`, W)) st.done2.push('h' + x); break; }
+    } else for (const [x, pc] of RULE.steps) {
+      if (!st.done2.includes('s' + x) && !(x === 10 && st.done2.includes('h10')) && vFull >= t.cost * x) { if (await sell(t, st, (bal * BigInt(pc)) / 100n, `到 ${x} 倍，賣出 ${pc}%（持倉約 ${v.toFixed(2)}U）`, W)) st.done2.push('s' + x); break; }
     }
     st.last = { v, fresh5, swaps5, swapsPrev5, at: ts() };
   }
@@ -1008,7 +1014,7 @@ async function paidLoop(mode = 'all', shard = null) {
     let progress = cap && sold != null ? sold / cap : 0, how = '已售／上限';
     if (!(progress > 0)) { const pr = await progressOf(c, code, tokAddr0); progress = pr.progress || 0; how = pr.how || ''; }
     /* 使用者 10/31 19:02：進度合理性檢查（币安人 把總量讀成 100 倍，進度 32% 被讀成 0.3%，別人打到我們沒打到）：讀到的進度很低、但已經很多人打 → 判定讀錯，改用庫存算法；還是不合理就當作讀不到，交給熱度規則 */
-    if (progress > 0 && progress < 0.03 && ((P.agents || 0) >= 50 || (sold || 0) >= 1000 || (HOT.get(c)?.from.size || 0) >= 15)) {
+    if (progress > 0 && progress < 0.03 && !(kind === 'bnb' && how === '已售／上限' && cap === 10000) /* 除錯 11/1：BNB 報價型固定 1 萬份就開池，「已售／1 萬」是準的；BNLAI 已售 201 份＝2% 被誤判成讀錯，當成讀不到＋很多人打就花了 14U */ && ((P.agents || 0) >= 50 || (sold || 0) >= 1000 || (HOT.get(c)?.from.size || 0) >= 15)) {
       const pr = await progressOf(c, code, tokAddr0).catch(() => ({}));
       if (pr.progress >= 0.03) { progress = pr.progress; how = pr.how || '庫存'; }
       else { if (!P.progBad) { P.progBad = 1; log(`進度看起來讀錯了：${c} 讀到 ${(progress * 100).toFixed(2)}% 但已有 ${P.agents || 0} 個代理人在打，改用熱度規則判斷`); } progress = 0; how = '讀不到（數字不合理）'; }
@@ -1150,7 +1156,7 @@ async function paidLoop(mode = 'all', shard = null) {
           }, async () => { const q2 = await call(c, '0x68bce8cd' + w(n)); const c2 = q2 ? BigInt(q2.slice(0, 66)) : 0n; return c2 > (costWei * 105n) / 100n ? '價格剛剛漲了超過 5%' : ''; }); /* 新功能：送出前再查一次價格 */
           S.paidSpend[W.name] = spent + vb; P.done[W.name] = 'minted';
           const usd = vb * price; if (tokAddr && !S.dyn.some((x) => x.addr === tokAddr.toLowerCase() && x.only === W.addr)) S.dyn.push({ sym, addr: tokAddr, cost: +usd.toFixed(2), only: W.addr, deployer: P.deployer, boughtAt: Date.now(), ...(FORCE.has(c) ? { hold: true } : {}) }); // 使用者指定的項目照免費幣處理：只通知不自動賣
-          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}\n${n} 份，花 ${vb.toFixed(4)} BNB（約 ${usd.toFixed(1)}U）· 已售 ${sold ?? '?'} 份 · 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}\n已加入監控：3 倍回本、5 倍和 10 倍各賣一半、回落 60% 全賣`);
+          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}\n${n} 份，花 ${vb.toFixed(4)} BNB（約 ${usd.toFixed(1)}U）· 已售 ${sold ?? '?'} 份 · 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}\n已加入監控：2 倍回本、10 倍賣 30%、20 倍再賣 50%、回落 40% 全賣`);
         } else {
           for (; n >= 1; n--) { const q = await call(c, '0x725c4058' + w(n)); costWei = q ? BigInt(q.slice(0, 66)) : 0n; if (costWei > 0n && price && ((Number(costWei) / 1e18) * 1.03) / price <= bal - PAID.keepBnb && Number(costWei) / 1e18 <= PAID.maxUsd) break; }
           if (n < 1) { P.lastReason = '每份太貴，超過 20U 預算'; return; } // 太貴：先不打（進度到 85% 後上限會放寬到 25U，會再檢查）
@@ -1174,7 +1180,7 @@ async function paidLoop(mode = 'all', shard = null) {
           }, async () => { const q2 = await call(c, '0x725c4058' + w(n)); const c2 = q2 ? BigInt(q2.slice(0, 66)) : 0n; return c2 > (costWei * 105n) / 100n ? '價格剛剛漲了超過 5%' : ''; })); /* 新功能：送出前再查一次價格 */
           S.paidSpend[W.name] = spent + needBnb; P.done[W.name] = 'minted';
           if (tokAddr && !S.dyn.some((x) => x.addr === tokAddr.toLowerCase() && x.only === W.addr)) S.dyn.push({ sym, addr: tokAddr, cost: +cu.toFixed(2), only: W.addr, deployer: P.deployer, boughtAt: Date.now() });
-          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}\n${n} 份，花 ${cu.toFixed(2)} USDT（由 BNB 換）· 已售 ${sold ?? '?'} 份 · 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}\n已加入監控：3 倍回本、5 倍和 10 倍各賣一半、回落 60% 全賣`);
+          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}\n${n} 份，花 ${cu.toFixed(2)} USDT（由 BNB 換）· 已售 ${sold ?? '?'} 份 · 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}\n已加入監控：2 倍回本、10 倍賣 30%、20 倍再賣 50%、回落 40% 全賣`);
         }
       } catch (e) { if (e.message.includes('結果不明')) { P.done[W.name] = 'unknown'; log(`paid ${c} ${W.name} ${e.message}`); await tg(`⚠️ [${W.name}] ${sym} 送出結果不明（逾時），為避免重打已停止，請到錢包確認有沒有打到\n${c}`); return; } if (e.message.includes('已開池')) { P.done[W.name] = 'pool-cheaper'; log(`paid ${c} ${W.name} ${e.message}`); return; } P.fail = (P.fail || 0) + 1; log(`paid ${c} ${W.name} ${e.message}`); if (kind === 'replay' && P.fail >= 2) { markUnmintable(c, P, sym, progress, '照別人的方式預演一直失敗'); return; } if (P.fail >= 6) { P.done[W.name] = 'fail'; await tg(`⚠️ [${W.name}] 付費項目 ${sym} 自動打失敗，已放棄：${e.message.slice(0, 150)}\n${c}`); } }
     }));
@@ -1293,7 +1299,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 自動更新（開源版才開；使用者 10/31 23:30：自動更新，安檢＋sha256＋備份照留，新版起不來自動換回；TG 回 /update 可手動觸發）──
-const UPD = { on: true, ver: '2.4.4', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 10/31 23:30：改成自動更新（安檢照留），並引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.4.5', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 10/31 23:30：改成自動更新（安檢照留），並引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
@@ -1320,7 +1326,8 @@ async function doUpdate() {
   if (!v.sha256 || createHash('sha256').update(buf).digest('hex') !== v.sha256) return '⚠️ 新版檔案校驗不符（GitHub 剛更新時快取還沒同步，或下載不完整），稍後再試';
   const old = readFileSync(SELF, 'utf8');
   const hosts = (t) => new Set([...t.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((m) => m[1].toLowerCase()));
-  const ho = hosts(old), nh = [...hosts(code)].filter((h) => !ho.has(h));
+  const TRUST = new Set(['api.geckoterminal.com', 'api.dexscreener.com', 'raw.githubusercontent.com', 'api.telegram.org', 'bsc-dataseed.bnbchain.org', 'bsc-rpc.publicnode.com']); /* 已知安全的價格／節點網站，之後新版用到不擋 */
+  const ho = hosts(old), nh = [...hosts(code)].filter((h) => !ho.has(h) && !TRUST.has(h));
   if (nh.length) return `⛔ 新版會連到沒見過的網站（${nh.slice(0, 3).join('、')}），為了安全已拒絕自動更新。請到 GitHub 自己看過再手動下載。`;
   const risky = [/private[_\s-]?key/gi, /mnemonic/gi, /seed\s?phrase/gi, /助記詞|助记词|私鑰|私钥/g, /\beval\s*\(/g, /new\s+Function\s*\(/g, /child_process/g, /powershell|Invoke-WebRequest|curl\s|wget\s|certutil|bitsadmin/gi, /execSync|spawnSync|\bspawn\s*\(/g, /\.(exe|dll|ps1|bat|cmd|vbs)['"`]/gi, /keystore/gi];
   for (const re of risky) { const n = (t) => (t.match(re) || []).length; if (n(code) > n(old)) return `⛔ 新版出現可疑內容（${re.source.slice(0, 40)}），為了安全已拒絕自動更新。請到 GitHub 自己看過再手動下載。`; }

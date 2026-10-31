@@ -1,11 +1,35 @@
 {
   "wallets": [
-    { "name": "mywallet.ai", "address": "0xYourAgentWallet" }
+    {
+      "name": "mywallet.ai",
+      "address": "0xYourAgentWallet"
+    }
   ],
-  "telegram": { "botToken": "", "chatId": "", "groupChatId": "" },
+  "telegram": {
+    "botToken": "",
+    "chatId": "",
+    "groupChatId": ""
+  },
   "timeZone": "Asia/Taipei",
-  "paid": { "goPct": 0.6, "maxUsd": 20, "keepBnb": 0.006 },
-  "rules": { "backX": 3, "halfX": [5, 10], "crash": 0.6, "fastMin": 30, "fastCrash": 0.35, "noPumpMin": 20, "noPumpX": 2 },
+  "paid": {
+    "goPct": 0.6,
+    "maxUsd": 20,
+    "keepBnb": 0.006
+  },
+  "rules": {
+    "backX": 3,
+    "steps": [
+      [
+        5,
+        50
+      ],
+      [
+        10,
+        50
+      ]
+    ],
+    "crash": 0.6
+  },
   "tokens": [],
   "watchVault": "",
   "forceMint": []
