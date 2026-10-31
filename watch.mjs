@@ -1293,7 +1293,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 自動更新（開源版才開；使用者 10/31 23:30：自動更新，安檢＋sha256＋備份照留，新版起不來自動換回；TG 回 /update 可手動觸發）──
-const UPD = { on: true, ver: '2.4.3', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 10/31 23:30：改成自動更新（安檢照留），並引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.4.4', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 10/31 23:30：改成自動更新（安檢照留），並引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
@@ -1317,7 +1317,7 @@ async function doUpdate() {
   const r = await fetch(`https://raw.githubusercontent.com/${UPD.repo}/main/watch.mjs?t=${Date.now()}`, { signal: AbortSignal.timeout(60000) }).catch(() => null);
   if (!r || !r.ok) return '⚠️ 下載新版失敗，等一下再試';
   const buf = Buffer.from(await r.arrayBuffer()), code = buf.toString('utf8');
-  if (!v.sha256 || createHash('sha256').update(buf).digest('hex') !== v.sha256) return '⛔ 新版檔案校驗不符（可能下載不完整或被改過），已取消更新';
+  if (!v.sha256 || createHash('sha256').update(buf).digest('hex') !== v.sha256) return '⚠️ 新版檔案校驗不符（GitHub 剛更新時快取還沒同步，或下載不完整），稍後再試';
   const old = readFileSync(SELF, 'utf8');
   const hosts = (t) => new Set([...t.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((m) => m[1].toLowerCase()));
   const ho = hosts(old), nh = [...hosts(code)].filter((h) => !ho.has(h));
