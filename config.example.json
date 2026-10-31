@@ -17,18 +17,18 @@
     "keepBnb": 0.006
   },
   "rules": {
-    "backX": 3,
+    "backX": 2,
     "steps": [
       [
-        5,
-        50
+        10,
+        30
       ],
       [
-        10,
+        20,
         50
       ]
     ],
-    "crash": 0.6
+    "crash": 0.4
   },
   "tokens": [],
   "watchVault": "",

@@ -31,6 +31,12 @@ if errorlevel 1 (
   echo [2/5] 正在安装币安 Agentic Wallet 工具（baw）...
   call npm install -g @binance/agentic-wallet
 )
+where baw >nul 2>nul
+if errorlevel 1 (
+  echo baw 安装失败，请检查网络后重新执行，或手动执行：npm install -g @binance/agentic-wallet
+  pause
+  exit /b
+)
 echo [2/5] baw 已安装
 
 REM ---- 3. 设定 ----
@@ -58,8 +64,7 @@ del data_wallets.txt >nul 2>nul
 REM ---- 5. 开机自动启动 + 现在启动 ----
 echo.
 echo [5/5] 设定开机自动启动
-set "SU=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\agentid-sniper.vbs"
-> "%SU%" echo CreateObject("WScript.Shell").Run """%~dp0start_hidden.vbs""", 0, False
+node -e "const p=require('path'),fs=require('fs');const f=p.join(process.env.APPDATA,'Microsoft','Windows','Start Menu','Programs','Startup','agentid-sniper.vbs');const t='CreateObject(\"WScript.Shell\").Run \"\"\"'+p.join(process.cwd(),'start_hidden.vbs')+'\"\"\", 0, False\r\n';fs.writeFileSync(f,Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(t,'utf16le')]));console.log('已设定开机自动启动')"
 start "" wscript "%~dp0start_hidden.vbs"
 echo.
 echo ==============================================
