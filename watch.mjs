@@ -918,7 +918,7 @@ async function heatOf(c, P) { // 算熱度：最近約 2.5 小時有幾個不同
   const last = new Map(); const skip = new Set([c, tok, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead']);
   const span = P.heatAt ? 6000 : 20000; // 第一次看約 2.5 小時，之後只看最近約 45 分鐘（累計數取最大值）
   for (let b = head - span; b <= head; b += 10000) {
-    const L = await rpc('eth_getLogs', [{ address: tok ? [c, tok] : c, fromBlock: '0x' + b.toString(16), toBlock: '0x' + Math.min(b + 9999, head).toString(16) }]).catch(() => []);
+    const q = [{ address: tok ? [c, tok] : c, fromBlock: '0x' + b.toString(16), toBlock: '0x' + Math.min(b + 9999, head).toString(16) }]; const L = await rpc('eth_getLogs', q).catch(() => logsRpc(q).catch(() => [])); /* 除錯 11/1：預設節點限流時改用多節點，熱度（參與人數）才算得準 */
     for (const l of L || []) for (const t of (l.topics || []).slice(1)) { if (!/^0x0{24}[0-9a-f]{40}$/i.test(t) || t.slice(26, 34) === '00000000') continue; const a = ('0x' + t.slice(26)).toLowerCase(); if (skip.has(a)) continue; const bn = parseInt(l.blockNumber, 16); if (!last.has(a) || last.get(a) < bn) last.set(a, bn); }
   }
   const unknown = [...last.keys()].filter((a) => !agentCache.has(a)).slice(0, 400);
@@ -944,7 +944,7 @@ function freshDeadline(data) { /* 照抄的交易裡如果有「期限」（看�
 }
 async function learnReplay(c) { // 學別人最近成功的鑄造：最常見的函式、要付多少 BNB／USDT、最近有幾個錢包在打
   const head = parseInt(await rpc('eth_blockNumber', []), 16);
-  const L = await rpc('eth_getLogs', [{ address: c, fromBlock: '0x' + (head - 1500).toString(16), toBlock: 'latest' }]).catch(() => []);
+  const L = await logsRpc([{ address: c, fromBlock: '0x' + (head - 1500).toString(16), toBlock: '0x' + head.toString(16) }]).catch(() => rpc('eth_getLogs', [{ address: c, fromBlock: '0x' + (head - 1500).toString(16), toBlock: 'latest' }]).catch(() => [])); /* 除錯 11/1：預設節點查事件常被限流（limit exceeded）→ 學不到打法；改用多節點輪替 */
   const hs = [...new Set((L || []).map((l) => l.transactionHash))].slice(-40);
   const all = (await Promise.all(hs.map((h) => rpc('eth_getTransactionByHash', [h]).catch(() => null)))).filter((t) => t && t.to && t.to.toLowerCase() === c);
   const txs = all.filter((t) => t.input && t.input.length >= 10 && !badSel(t.input) && !t.input.toLowerCase().includes(t.from.slice(2).toLowerCase()));
@@ -1314,7 +1314,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.4.8', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.4.9', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
