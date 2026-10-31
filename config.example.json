@@ -4,9 +4,18 @@
   ],
   "telegram": { "botToken": "", "chatId": "", "groupChatId": "" },
   "timeZone": "Asia/Taipei",
-  "paid": { "goPct": 0.6, "maxUsd": 20, "keepBnb": 0.006 },
+  "paid": {
+    "off": false,
+    "goPct": 0.8,
+    "maxUsd": 1,
+    "cheapUsd": 0.5,
+    "perProjectUsd": 1,
+    "keepBnb": 0.002,
+    "maxBnbPerDay": 0.01134
+  },
   "rules": { "backX": 3, "halfX": [5, 10], "crash": 0.6, "fastMin": 30, "fastCrash": 0.35, "noPumpMin": 20, "noPumpX": 2 },
   "tokens": [],
   "watchVault": "",
-  "forceMint": []
+  "forceMint": [],
+  "blockedDevs": []
 }
