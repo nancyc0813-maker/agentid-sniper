@@ -1,11 +1,7 @@
 {
- "version": "2.4.5",
- "sha256": "62c6c7ffabd1d0e73731ed45090dd1bfd20438eede4b6a5ced9050d50e1e5685",
+ "version": "2.4.6",
+ "sha256": "df98ee9ccc8e7a04cea5bfd3eb47319b4b5d1850aa0cac51dcd890160b29fbec",
  "notes": [
-  "进场门槛从 60% 改成 55%（免费、付费都一样）",
-  "开盘侦测加上 GeckoTerminal：PancakeSwap Infinity、Uniswap v4 的池子也查得到价格",
-  "固定 1 万份的项目直接相信读到的进度，不会再把低进度误判成读不到而误买",
-  "特殊规则跌破成本一半会发提醒",
-  "卖出规则改成可设定的 steps（倍数＋卖出比例），默认 3 倍回本、5 倍和 10 倍各卖 50%、回落 60% 全卖"
+  "改回只提醒、不自动更新：有新版会通知你，回 /update 才会更新"
  ]
 }
