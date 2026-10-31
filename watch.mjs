@@ -1298,20 +1298,17 @@ async function manualMints() {
   }
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
-// ── 自動更新（開源版才開；使用者 10/31 23:30：自動更新，安檢＋sha256＋備份照留，新版起不來自動換回；TG 回 /update 可手動觸發）──
-const UPD = { on: true, ver: '2.4.5', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 10/31 23:30：改成自動更新（安檢照留），並引導用戶加入使用者的 TG 群 */
+// ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
+const UPD = { on: true, ver: '2.4.6', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
   try {
     const r = await fetch(`https://raw.githubusercontent.com/${UPD.repo}/main/version.json?t=${Date.now()}`, { signal: AbortSignal.timeout(15000) }); if (!r.ok) return null;
     const v = await r.json(); if (!v.version || !verGt(v.version, UPD.ver)) return null; UPD.latest = v;
-    if (!quiet && S.updTried !== v.version) { /* 自動更新：發現新版就自動下載、安檢、更新；安檢沒過就不更新，只通知 */
-      const res = await doUpdate().catch((e) => '⚠️ 自動更新出錯：' + e.message);
-      const ok = res.startsWith('✅');
-      if (!ok && !res.startsWith('⛔')) { log('自動更新暫時失敗，30 分鐘後再試：' + res); return v; } /* 除錯：下載失敗、網路問題不算，下次再試；只有成功或安檢拒絕才記錄 */
-      S.updTried = v.version; save();
-      const msg = ok ? `🔔 Agent ID Sniper 已自動更新到 v${v.version}\n${(v.notes || []).map((x) => '• ' + x).join('\n')}\n\n更新通知、開盤播報都在官方群：${UPD.group}` : `⚠️ Agent ID Sniper 有新版 v${v.version}，但沒有自動更新：\n${res}\n\n請到官方群看說明：${UPD.group}`;
+    if (!quiet && S.updNotified !== v.version) { /* 使用者 11/1 00:47：不要自動更新（怕被罵）——只提醒，用戶自己回 /update 才更新 */
+      S.updNotified = v.version; save();
+      const msg = `🔔 Agent ID Sniper 有新版 v${v.version}（你現在是 v${UPD.ver}）\n${(v.notes || []).map((x) => '• ' + x).join('\n')}\n\n要更新：在 TG 回「/update」，或在工具資料夾放一個名為 UPDATE 的空檔案（更新前會自動安檢、備份舊版）。\n不更新也可以照常使用。\n官方群：${UPD.group}`;
       log(msg.replace(/\n/g, ' | ')); console.log('\n' + '='.repeat(48) + '\n' + msg + '\n' + '='.repeat(48) + '\n'); await tgSay(msg);
     }
     return v;
@@ -1328,9 +1325,9 @@ async function doUpdate() {
   const hosts = (t) => new Set([...t.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map((m) => m[1].toLowerCase()));
   const TRUST = new Set(['api.geckoterminal.com', 'api.dexscreener.com', 'raw.githubusercontent.com', 'api.telegram.org', 'bsc-dataseed.bnbchain.org', 'bsc-rpc.publicnode.com']); /* 已知安全的價格／節點網站，之後新版用到不擋 */
   const ho = hosts(old), nh = [...hosts(code)].filter((h) => !ho.has(h) && !TRUST.has(h));
-  if (nh.length) return `⛔ 新版會連到沒見過的網站（${nh.slice(0, 3).join('、')}），為了安全已拒絕自動更新。請到 GitHub 自己看過再手動下載。`;
+  if (nh.length) return `⛔ 新版會連到沒見過的網站（${nh.slice(0, 3).join('、')}），為了安全已拒絕更新。請到 GitHub 自己看過再手動下載。`;
   const risky = [/private[_\s-]?key/gi, /mnemonic/gi, /seed\s?phrase/gi, /助記詞|助记词|私鑰|私钥/g, /\beval\s*\(/g, /new\s+Function\s*\(/g, /child_process/g, /powershell|Invoke-WebRequest|curl\s|wget\s|certutil|bitsadmin/gi, /execSync|spawnSync|\bspawn\s*\(/g, /\.(exe|dll|ps1|bat|cmd|vbs)['"`]/gi, /keystore/gi];
-  for (const re of risky) { const n = (t) => (t.match(re) || []).length; if (n(code) > n(old)) return `⛔ 新版出現可疑內容（${re.source.slice(0, 40)}），為了安全已拒絕自動更新。請到 GitHub 自己看過再手動下載。`; }
+  for (const re of risky) { const n = (t) => (t.match(re) || []).length; if (n(code) > n(old)) return `⛔ 新版出現可疑內容（${re.source.slice(0, 40)}），為了安全已拒絕更新。請到 GitHub 自己看過再手動下載。`; }
   const tmp = join(DIR, 'data', 'update_new.mjs'); writeFileSync(tmp, code);
   const bad = await new Promise((res) => execFile(process.execPath, ['--check', tmp], { windowsHide: true, timeout: 60000 }, (e, o, er) => res(e ? String(er || e.message) : '')));
   if (bad) { try { unlinkSync(tmp); } catch {} return '⛔ 新版語法檢查沒過，已取消更新：' + bad.slice(0, 120); }
