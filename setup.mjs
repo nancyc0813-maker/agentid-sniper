@@ -9,7 +9,7 @@ const ask = async (q, ok = () => true, def = '') => { for (;;) { const a = (awai
 const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(a);
 const f = join(DIR, 'config.json');
 const cfg = JSON.parse(readFileSync(existsSync(f) ? f : join(DIR, 'config.example.json'), 'utf8'));
-if (existsSync(f)) { const again = await ask('已经有 config.json，要重新设定吗？(y/N) ', () => true, 'n'); if (!/^y/i.test(again)) { console.log('保留原本的设定'); rl.close(); process.exit(0); } }
+if (existsSync(f)) { const again = await ask('已经有 config.json，要重新设定吗？(y/N) ', () => true, 'n'); if (!/^y/i.test(again)) { console.log('保留原本的设定'); writeFileSync(join(DIR, 'data_wallets.txt'), String((cfg.wallets || []).length)); rl.close(); process.exit(0); } }
 console.log('\n=== 第 1 步：Agent ID 钱包 ===');
 console.log('在币安 App → 钱包 → Agentic Wallet 可以看到你的 .ai 名称和钱包地址（0x 开头）');
 const w1 = { name: await ask('第 1 个钱包的 .ai 名称（例如 abc.ai）：', (a) => a.length > 0), address: (await ask('第 1 个钱包地址（0x…）：', isAddr)).toLowerCase() };
