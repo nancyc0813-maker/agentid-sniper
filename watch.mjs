@@ -1001,16 +1001,32 @@ async function siteScan(host, url) { /* 只讀網頁文字：不連錢包、不�
   const cs = []; for (const a of addrs) { const code = ((await rpc('eth_getCode', [a, 'latest']).catch(() => '')) || '').toLowerCase(); if (code.length > 2) cs.push(a); }
   return { title, cs };
 }
+async function agentOnly(c) { /* 使用者 11/1 18:26：群裡丟的網址，要先確認是不是「Agent ID（AI 代理人）才能打」的項目 */
+  S.agentOnly = S.agentOnly || {}; if (S.agentOnly[c] != null) return S.agentOnly[c];
+  let r = ''; try {
+    let code = ((await rpc('eth_getCode', [c, 'latest']).catch(() => '')) || '').toLowerCase(); code = await fullCode(c, code).catch(() => code);
+    if (code.includes(REGISTRY)) r = '合約裡有 Agent ID 檢查';
+    else { /* 合約沒寫（可能是官網簽名驗證）→ 看最近打它的錢包是不是大多持有 Agent ID */
+      const head = parseInt(await rpc('eth_blockNumber', []), 16); const L = await logsRpc([{ address: c, fromBlock: '0x' + (head - 3000).toString(16), toBlock: '0x' + head.toString(16) }]).catch(() => []);
+      const hs = [...new Set((L || []).map((l) => l.transactionHash))].slice(-40);
+      if (hs.length >= 5) { const txs = await rpcBatch(hs.map((h) => ({ method: 'eth_getTransactionByHash', params: [h] }))); const fr = [...new Set(txs.map((t) => String(t?.from || '').toLowerCase()).filter((a) => /^0x[0-9a-f]{40}$/.test(a)))].slice(0, 16);
+        let n = 0; for (const a of fr) { const b = await call('0x' + REGISTRY, '0x70a08231' + wa(a)); if (b && BigInt(b.slice(0, 66)) > 0n) n++; } if (fr.length >= 5 && n / fr.length >= 0.6) r = `打它的錢包 ${Math.round((n / fr.length) * 100)}% 持有 Agent ID`; }
+    }
+  } catch {}
+  S.agentOnly[c] = r; return r;
+}
 async function hotUrls() {
   if (!S.urlHits) return; S.urlNoted = S.urlNoted || {};
   for (const [host, h] of Object.entries(S.urlHits)) {
     for (const o of [h.chats, h.senders]) for (const [k, t] of Object.entries(o)) if (Date.now() - t > 86400e3) delete o[k];
     const nc = Object.keys(h.chats).length, ns = Object.keys(h.senders).length; if (!nc && Date.now() - h.first > 86400e3) { delete S.urlHits[host]; continue; }
     if (S.urlNoted[host] || !(nc >= 2 || ns >= 3)) continue; /* 使用者 11/1 18:03：門檻降低，更早發現（安小將湊滿 3 群 5 人時已經快賣完） */ S.urlNoted[host] = ts();
-    const { title, cs } = await siteScan(host, h.url).catch(() => ({ title: '', cs: [] }));
+    const { title, cs: cs0 } = await siteScan(host, h.url).catch(() => ({ title: '', cs: [] }));
+    const cs = [], why = {}; for (const c of cs0) { const w = await agentOnly(c); if (w) { cs.push(c); why[c] = w; } }
+    if (cs0.length && !cs.length) { log(`🌐 熱門網址：${host}（${nc} 個群、${ns} 個人在傳）網站上的合約都不是 Agent ID 專屬項目，略過：${cs0.join('、')}`); continue; }
     for (const c of cs) { S.paid = S.paid || {}; if (!S.paid[c]) S.paid[c] = { at: Date.now(), name: title || host, done: {}, fromUrl: host }; (S.grpHits = S.grpHits || {})[c] = S.grpHits[c] || { chats: {}, first: Date.now(), names: [] }; Object.assign(S.grpHits[c].chats, h.chats); }
     log(`🌐 熱門網址：${host}（${nc} 個群、${ns} 個人在傳）${title ? '「' + title + '」' : ''} → 網站上的合約：${cs.join('、') || '找不到'}`);
-    await tg(`🌐 ${nc} 個群、${ns} 個人在傳：${host}${title ? '\n' + title : ''}\n${cs.length ? '網站上的合約（已加入追蹤，打不打照鏈上規則）：\n' + cs.join('\n') : '網站上找不到合約地址（可能要連錢包後才顯示），要看的話手動處理'}`);
+    await tg(`🌐 ${nc} 個群、${ns} 個人在傳：${host}${title ? '\n' + title : ''}\n${cs.length ? 'Agent ID 專屬的合約（已加入追蹤，打不打照鏈上規則）：\n' + cs.map((c) => c + '（' + why[c] + '）').join('\n') : '網站上找不到合約地址（可能要連錢包後才顯示），要看的話手動處理'}`);
   }
   const ks = Object.keys(S.urlHits); if (ks.length > 5000) for (const k of ks.slice(0, ks.length - 5000)) delete S.urlHits[k];
   const kn = Object.keys(S.urlNoted); if (kn.length > 3000) for (const k of kn.slice(0, kn.length - 3000)) delete S.urlNoted[k];
@@ -1035,6 +1051,7 @@ async function tgGroupWatch() {
       for (const [k, t] of Object.entries(h.chats)) if (Date.now() - t > 86400e3) delete h.chats[k];
       const cnt = Object.keys(h.chats).length; if (!cnt && Date.now() - h.first > 86400e3) { delete S.grpHits[c]; continue; }
       if (cnt >= 3 && !h.noted) { h.noted = 1; const code = ((await rpc('eth_getCode', [c, 'latest']).catch(() => '')) || ''); if (code.length <= 2) continue;
+        const ao = await agentOnly(c); if (!ao) { log(`💬 ${cnt} 個群在討論 ${c}，但不是 Agent ID 專屬項目，略過`); continue; } /* 使用者 11/1 18:26 */
         let nm = tokStr(await call(c, '0x95d89b41')) || tokStr(await call(c, '0x06fdde03')) || c.slice(0, 10);
         S.paid = S.paid || {}; if (!S.paid[c]) S.paid[c] = { at: Date.now(), name: nm, done: {}, fromGroups: cnt };
         log(`💬 TG 群組熱議：${nm} ${c} 24 小時內有 ${cnt} 個群在討論（${h.names.slice(0, 5).join('、')}），加入追蹤，照鏈上規則決定打不打`);
@@ -1544,7 +1561,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.7.1', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.7.2', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
