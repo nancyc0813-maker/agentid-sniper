@@ -251,7 +251,7 @@ function trackFromSim(W, sim, sym, costUsd) { /* 打到的代幣自動加入持�
     if (!(costUsd > 0) && (paidBnb > 0 || paidU > 0)) { const px = S.lastBnbUsd || 600; costUsd = paidBnb * px + paidU; tg(`⚠️ [${W.name}] ${noLink(sym || '')} 有付錢（${paidBnb > 0 ? paidBnb.toFixed(4) + ' BNB ' : ''}${paidU > 0 ? paidU.toFixed(2) + ' USDT' : ''}）但當下讀不到價格，成本已改用估算 ${costUsd.toFixed(2)}U 記錄，照付費幣規則賣`).catch(() => {}); }
   }
   try { for (const b of sim?.balanceChanges || []) { if (String(b.owner).toLowerCase() !== W.addr || !(Number(b.change) > 0)) continue; const a = String(b.contractAddress || '').toLowerCase(); if (!/^0x[0-9a-f]{40}$/.test(a) || a.startsWith('0xeeee') || a === USDT || a === WBNB) continue; if (String(b.tokenType || '') !== 'Erc20') continue; /* 只追蹤 ERC20 代幣，NFT 不追 */
-    S.dyn = S.dyn || []; if (!S.dyn.some((t) => t.addr === a && t.only === W.addr)) { S.dyn.push({ sym: sym || a.slice(0, 8), addr: a, cost: +(costUsd || 0).toFixed(2), only: W.addr, boughtAt: Date.now() }); log(`[${W.name}] ${sym || a} 加入持倉監控（成本約 ${(costUsd || 0).toFixed(2)}U）`); } } } catch {}
+    S.dyn = S.dyn || []; { const ex = S.dyn.find((t) => t.addr === a && t.only === W.addr); if (ex && (costUsd || 0) > 0) { ex.cost = +((ex.cost || 0) + costUsd).toFixed(2); log(`[${W.name}] ${ex.sym} 加碼，成本累加到約 ${ex.cost}U`); } /* v2.7.9：同一个币再买，成本要累加，不然倍数算错、会提早出本 */ } if (!S.dyn.some((t) => t.addr === a && t.only === W.addr)) { S.dyn.push({ sym: sym || a.slice(0, 8), addr: a, cost: +(costUsd || 0).toFixed(2), only: W.addr, boughtAt: Date.now() }); log(`[${W.name}] ${sym || a} 加入持倉監控（成本約 ${(costUsd || 0).toFixed(2)}U）`); } } } catch {}
 }
 const SELLING = new Set();
 async function sell(t, st, amt, why, W = WALLETS[0]) {
@@ -1633,7 +1633,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.7.8', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.7.9', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
