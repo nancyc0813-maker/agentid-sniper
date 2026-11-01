@@ -700,7 +700,7 @@ async function freeProgress(c) { /* 免費項目的進度：已鑄造／總量�
   fpCache.set(c, { t: Date.now(), p }); return p;
 }
 async function progressSweep() { /* 使用者 10/31 23:21 查 Pulsepanther 沒打到：追蹤名單 500 多個，一般檢查每輪只看 16 個、一個要 10~30 秒，低進度的項目要 2~3 小時才回頭看一次，10% 直接漲到 100% 都沒發現。改成每分鐘用輕量方式只讀進度（最多 80 個、6 個同時），進度過 45% 就會進快速名單，每 15 秒檢查 */
-  const now = Date.now(); const list = Object.entries(S.paid || {}).filter(([c, P]) => !P.unmintable && (P.progress || 0) < 0.999 && now - (P.at || 0) < 86400e3 && !WALLETS.every((W) => P.done?.[W.name])).sort((x, y) => (x[1].sweepAt || 0) - (y[1].sweepAt || 0)).slice(0, 80);
+  const now = Date.now(); const list = Object.entries(S.paid || {}).filter(([c, P]) => !P.unmintable && (P.progress || 0) < 0.999 && now - (P.at || 0) < 172800e3 /* v2.7.7：两天内的项目都监测 */ && !WALLETS.every((W) => P.done?.[W.name])).sort((x, y) => (x[1].sweepAt || 0) - (y[1].sweepAt || 0)).slice(0, 80);
   let i = 0; await Promise.all(Array.from({ length: 6 }, async () => { while (i < list.length) { const [c, P] = list[i++]; try { if (P.progAt && Date.now() - P.progAt < 180e3) { P.sweepAt = Date.now(); continue; } /* 除錯：正式檢查 3 分鐘內剛讀過的不覆蓋（避免讀法不同把已賣完的又拉回快速名單、佔名額） */ let fp = null; if (P.soldSel) { /* 除錯 11/1：bibiai AGENT ID 用「已售／總量」才讀得到（已售 a2309ff8、總量 a0e23ebd），一般免費讀法讀不到 → 卡在 0% 兩小時沒回頭看，漲到 92% 都不知道 */ const sr = await call(c, P.soldSel); const sold = sr && sr.length >= 66 ? Number(BigInt(sr.slice(0, 66))) : null; if (sold > 0) { if (P.capSel === undefined) P.capSel = (await findCapSel(c, await fullCode(c, await codeOf(c)).catch(() => ''), sold).catch(() => '')) || ''; if (P.capSel) { const cr = await call(c, '0x' + P.capSel); const cap = cr && cr.length >= 66 ? Number(BigInt(cr.slice(0, 66))) : 0; if (cap >= sold && cap > 0) fp = sold / cap; } } }
       if (fp == null) fp = await freeProgress(c); P.sweepAt = Date.now(); if (fp != null && fp > 0) { if (fp >= 0.45 && (P.progress || 0) < 0.45 && !P.swLog) { P.swLog = 1; log(`進度掃描：${P.name || c} 進度 ${Math.round(fp * 100)}%，移到快速檢查`); } P.progress = fp >= 0.999 && !P.progAt ? 1 : Math.min(fp, 0.99); /* 審查 11/1：免費合約正式檢查不會讀進度，賣完的會永遠卡 99% 佔快速名單 → 直接記 100% */ /* 100% 交給快速檢查用正式讀法確認，避免讀錯就永遠不看 */ } } catch {} } }));
 }
@@ -843,7 +843,7 @@ const codeCache = new Map();
 async function codeOf(a) { if (!codeCache.has(a)) codeCache.set(a, ((await rpc('eth_getCode', [a, 'latest']).catch(() => '')) || '').toLowerCase()); return codeCache.get(a); }
 async function bnbUsd() {
   const p = await call(FACTORY, '0xe6a43905' + wa(WBNB) + wa(USDT)); const pair = '0x' + (p || '').slice(26); const r = await call(pair, '0x0902f1ac'); const t0 = await call(pair, '0x0dfe1681');
-  if (!r || !t0) return S.lastBnbUsd || 0; const a = BigInt(r.slice(0, 66)), b = BigInt('0x' + r.slice(66, 130)); const px = t0.slice(26) === WBNB.slice(2) ? Number(b) / Number(a) : Number(a) / Number(b); if (px > 50 && px < 100000) S.lastBnbUsd = px; return px || S.lastBnbUsd || 0; /* 除錯 11/1：SENSEI 補打時節點剛好沒回 → BNB 價格 0 → NANCY.AI 成本記成 0U，被當成免費幣、2 倍沒賣回本；改成用上一次的價格 */
+  if (!r || !t0) return S.lastBnbUsd || 0; const a = BigInt(r.slice(0, 66)), b = BigInt('0x' + r.slice(66, 130)); const px = t0.slice(26) === WBNB.slice(2) ? Number(b) / Number(a) : Number(a) / Number(b); if (px > 50 && px < 100000) S.lastBnbUsd = px; return px || S.lastBnbUsd || 0; /* 除錯 11/1：SENSEI 補打時節點剛好沒回 → BNB 價格 0 → 錢包成本記成 0U，被當成免費幣、2 倍沒賣回本；改成用上一次的價格 */
 }
 const tokStr = (r) => { try { const h = r.slice(2); const len = Number(BigInt('0x' + h.slice(64, 128))); return Buffer.from(h.slice(128, 128 + len * 2), 'hex').toString('utf8'); } catch { return ''; } };
 async function readLimit(W, c) { 
@@ -1005,13 +1005,16 @@ function noteUrls(t, m, chatId) {
     const h = (S.urlHits[host] = S.urlHits[host] || { chats: {}, senders: {}, first: Date.now(), url: u }); h.chats[chatId] = Date.now(); h.senders[sender] = Date.now(); if (VIP_IDS.has(chatId)) h.vip = Date.now(); }
 }
 async function siteScan(host, url) { /* 只讀網頁文字：不連錢包、不簽名、不執行網站上的程式；只抓網頁裡列出的合約地址 */
+  /* v2.7.7：主程式档里的加密常数（64 位）、Multicall、0xeeee… 这类假地址，以前会被当成「已找到地址」就不去读 deployment.json；改成只认刚好 40 位、排除通用地址，找不到真的合约才换下一个来源 */
+  const GEN = new Set(['0xca11bde05977b3631167028862be2a173976ca11', '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', '0xffffffffffffffffffffffffffffffffffffffff', '0x000000000022d473030f116ddee9f6b43ac78ba3']);
+  const pick = (t) => [...new Set([...String(t).matchAll(/(?<![0-9a-fA-F])0x[a-fA-F0-9]{40}(?![0-9a-fA-F])/g)].map((m) => m[0].toLowerCase()))].filter((a) => !INFRA.has(a) && !GEN.has(a) && !/^0x0{40}$/.test(a) && !/^0x(.{4})\1{9}$/.test(a) && a !== USDT && a !== WBNB);
+  const codeChk = new Map(); const real = async (t) => { const out = []; for (const a of pick(t).slice(0, 12)) { if (!codeChk.has(a)) { const cd = ((await rpc('eth_getCode', [a, 'latest']).catch(() => '')) || ''); codeChk.set(a, cd.length > 2); } if (codeChk.get(a)) out.push(a); } return out; };
   const get = async (u) => { try { const r = await fetch(u, { headers: { 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(12000) }); let fh = ''; try { fh = new URL(r.url).hostname.toLowerCase().replace(/^www\./, ''); } catch {} if (!r.ok || (fh && fh !== host && !fh.endsWith('.' + host))) return ''; const tx = await r.text(); return tx.slice(0, 3e6); } catch { return ''; } };
   let html = await get(url.startsWith('https://') ? url : 'https://' + host + '/'); if (!html && url !== 'https://' + host + '/') html = await get('https://' + host + '/');
   let text = html; const title = noLink(((html.match(/<title[^>]*>([^<]{1,80})/i) || [])[1] || '').trim());
-  if (!(html.match(/0x[a-fA-F0-9]{40}/g) || []).some((x) => !INFRA.has(x.toLowerCase()))) for (const src of [...new Set([...html.matchAll(/<(?:script|link)[^>]+(?:src|href)=["']([^"']+\.(?:json|js)(?:\?[^"']*)?)["']/gi)].map((x) => x[1]))].sort((x, y) => (y.endsWith('.json') ? 1 : 0) - (x.endsWith('.json') ? 1 : 0)).slice(0, 5)) { /* 網站常把合約地址放在 deployment.json 或主程式檔裡 */ let su = ''; try { su = new URL(src, 'https://' + host + '/').href; } catch { continue; } text += await get(su); }
-  if (!(text.match(/0x[a-fA-F0-9]{40}/g) || []).some((x) => !INFRA.has(x.toLowerCase()))) for (const ep of ['/api/stats', '/api/config', '/api/info', '/api/contract', '/api/contracts', '/api/token', '/api/mint', '/api/status', '/config.json', '/deployment.json', '/contracts.json']) { text += await get('https://' + host + ep); if ((text.match(/0x[a-fA-F0-9]{40}/g) || []).some((x) => !INFRA.has(x.toLowerCase()))) break; } /* 使用者 11/1 19:26：像 BAO AGENT 合約只放在網站的資料介面（/api/stats）裡 */
-  const addrs = [...new Set((text.match(/0x[a-fA-F0-9]{40}/g) || []).map((x) => x.toLowerCase()))].filter((a) => !INFRA.has(a) && !/^0x0{40}$/.test(a) && a !== USDT && a !== WBNB).slice(0, 8);
-  const cs = []; for (const a of addrs) { const code = ((await rpc('eth_getCode', [a, 'latest']).catch(() => '')) || '').toLowerCase(); if (code.length > 2) cs.push(a); }
+  if (!(await real(html)).length) for (const src of [...new Set([...html.matchAll(/<(?:script|link)[^>]+(?:src|href)=["']([^"']+\.(?:json|js)(?:\?[^"']*)?)["']/gi)].map((x) => x[1]))].sort((x, y) => (y.endsWith('.json') ? 1 : 0) - (x.endsWith('.json') ? 1 : 0)).slice(0, 5)) { /* 網站常把合約地址放在 deployment.json 或主程式檔裡 */ let su = ''; try { su = new URL(src, 'https://' + host + '/').href; } catch { continue; } text += await get(su); }
+  if (!(await real(text)).length) for (const ep of ['/api/stats', '/api/config', '/api/info', '/api/contract', '/api/contracts', '/api/token', '/api/mint', '/api/status', '/config.json', '/deployment.json', '/contracts.json']) { text += await get('https://' + host + ep); if ((await real(text)).length) break; } /* 使用者 11/1 19:26：像 BAO AGENT 合約只放在網站的資料介面（/api/stats）裡 */
+  const cs = (await real(text)).slice(0, 8);
   return { title, cs };
 }
 async function agentOnly(c) { /* 使用者 11/1 18:26：群裡丟的網址，要先確認是不是「Agent ID（AI 代理人）才能打」的項目 */
@@ -1202,7 +1205,7 @@ async function heatOf(c, P) { // 算熱度：最近約 2.5 小時有幾個不同
 const hk = (P) => (P.heatAt || 0) + (heatTier(P) >= 1 || (P.progress || 0) >= 0.2 ? 0 : 540e3);
 async function heatWatch() { // 背景：替追蹤中的付費項目算熱度，看不懂的合約順便學別人的打法（不拖慢 15 秒的快速檢查）
   const sig = (c, P) => ((P.fromCall || P.fromUrl || grpN(c) >= 2) && !P.heatAt ? 1 : 0); /* 除錯 11/1（BAO AGENT）：頻道／群組／網址來的新項目優先算熱度 */
-  const ents = Object.entries(S.paid || {}).filter(([c, P]) => !INFRA.has(c) && !P.unmintable && (P.progress || 0) < 0.999 && !WALLETS.every((W) => P.done?.[W.name]) && Date.now() - (P.at || 0) < 86400e3)
+  const ents = Object.entries(S.paid || {}).filter(([c, P]) => !INFRA.has(c) && !P.unmintable && (P.progress || 0) < 0.999 && !WALLETS.every((W) => P.done?.[W.name]) && Date.now() - (P.at || 0) < 172800e3 /* v2.7.7：两天 */)
     .sort((a, b) => (sig(b[0], b[1]) - sig(a[0], a[1])) || ((b[1].needLearn && (b[1].progress || 0) >= 0.45) - (a[1].needLearn && (a[1].progress || 0) >= 0.45)) || (hk(a[1]) - hk(b[1])) || ((b[1].at || 0) - (a[1].at || 0))).slice(0, 8); // 快滿或很熱的約每分鐘更新，其他約 10 分鐘；快到門檻又還不會打的排最前面（除錯 11/1：BNBCAT 57% 一直排不到）
   for (const [c, P] of ents) {
     try {
@@ -1272,9 +1275,9 @@ async function paidLoop(mode = 'all', shard = null) {
   // 進度 ≥40% 的（快滿的）每輪都看，不跟其他一百多個排隊；其餘輪流，每輪補到 16 個
   const all = Object.entries(S.paid);
   
-  const hotP = all.filter(([c, P]) => FORCE.has(c) || ((grpN(c) >= 2 || ((P.fromUrl || P.fromCall) && Date.now() - (P.at || 0) < 86400e3) || (P.progress || 0) >= 0.45 || /* 使用者 11/1 16:35：3 個以上 TG 群在討論的也放進每 15 秒的快速檢查 */ (fpCache.get(c)?.p || 0) >= 0.45 || (!(P.progress > 0) && Math.max(P.agents || 0, HOT.get(c)?.from.size || 0) >= 70)) && (P.progress || 0) < 0.999 && !P.unmintable)).filter(([c, P]) => !WALLETS.every((W) => P.done[W.name])).sort((a, b) => (b[1].progress || 0) - (a[1].progress || 0) || (b[1].agents || 0) - (a[1].agents || 0)).slice(0, 12); /* 使用者 10/31 20:29：快速檢查只看快到門檻的（進度 ≥45%，或讀不到進度但已 70 個以上錢包），最多 12 個，避免越來越慢 */
+  const hotP = all.filter(([c, P]) => FORCE.has(c) || ((grpN(c) >= 2 || ((P.fromUrl || P.fromCall) && Date.now() - (P.at || 0) < 86400e3) || (P.progress || 0) >= 0.45 || /* 使用者 11/1 16:35：3 個以上 TG 群在討論的也放進每 15 秒的快速檢查 */ (fpCache.get(c)?.p || 0) >= 0.45 || (!(P.progress > 0) && Math.max(P.agents || 0, HOT.get(c)?.from.size || 0) >= 70)) && (P.progress || 0) < 0.999 && !P.unmintable && (FORCE.has(c) || !P.serialLog))).filter(([c, P]) => !WALLETS.every((W) => P.done[W.name])).sort((a, b) => (FORCE.has(b[0]) ? 1 : 0) - (FORCE.has(a[0]) ? 1 : 0) /* v2.7.7：forceMint 指定的项目永远排第一，不会被挤出 12 个名额 */ || (b[1].progress || 0) - (a[1].progress || 0) || (b[1].agents || 0) - (a[1].agents || 0)).slice(0, 12); /* 使用者 10/31 20:29：快速檢查只看快到門檻的（進度 ≥45%，或讀不到進度但已 70 個以上錢包），最多 12 個，避免越來越慢 */
   // 快速檢查（mode='hot'）每 15 秒只看快滿／很熱的；一般檢查（mode='rest'）另外在背景約每分鐘輪流看其他的，互不拖慢
-  const rest = mode === 'hot' ? [] : all.filter((e) => !hotP.includes(e) && Date.now() - (e[1].at || 0) < 86400e3).sort((a, b) => ((a[1].lastTry || 0) - (b[1].lastTry || 0)) || ((b[1].at || 0) - (a[1].at || 0))).slice(0, 16); /* 除錯 11/1（BAO AGENT）：追蹤名單 3000 多個，新加入的（頻道、網址）排在一堆從沒檢查過的舊項目後面，好幾小時都沒輪到；改成只輪三天內的、而且新的優先 */
+  const rest = mode === 'hot' ? [] : all.filter((e) => !hotP.includes(e) && Date.now() - (e[1].at || 0) < 172800e3 /* v2.7.7：两天内的都轮 */).sort((a, b) => ((a[1].lastTry || 0) - (b[1].lastTry || 0)) || ((b[1].at || 0) - (a[1].at || 0))).slice(0, 16); /* 除錯 11/1（BAO AGENT）：追蹤名單 3000 多個，新加入的（頻道、網址）排在一堆從沒檢查過的舊項目後面，好幾小時都沒輪到；改成只輪三天內的、而且新的優先 */
   const ents = mode === 'rest' ? rest : mode === 'hot' ? (shard == null ? hotP : hotP.filter((e, i) => i % 3 === shard)) : hotP.concat(rest); /* 快速檢查分 3 組同時跑（審查修正：一個一個查要 1 分多鐘） */
   for (const [c, P] of ents) {
     if (INFRA.has(c)) { delete S.paid[c]; continue; } // Agent ID 登記合約本身不是項目（註冊 .ai 身份），不打
@@ -1282,6 +1285,7 @@ async function paidLoop(mode = 'all', shard = null) {
     try {
     P.lastTry = Date.now(); if (WALLETS.every((W) => P.done[W.name])) { if (FORCE.has(c)) { S.forceDone = S.forceDone || {}; S.forceDone[c] = 1; } delete S.paid[c]; continue; }
     if (Date.now() - P.at > PAID.maxAgeH * 3600e3) { delete S.paid[c]; continue; }
+    if (P.serialLog && !FORCE.has(c)) continue; /* v2.7.7：被「大量部署者」规则挡掉的不再重查（以前占掉九成快速检查名额，拖慢真正热门的项目）；规则本身不变 */
     const code = await codeOf(c);
     // 發現時還沒開的「免費」鑄造：之後每分鐘重試，一開就自動打
     const fcd = (P.progress || 0) >= GO_PCT - 0.02 || Math.max(P.agents || 0, HOT.get(c)?.from.size || 0) >= 70 ? 20e3 : 120e3; /* 除錯 11/1：快到 60% 的免費項目改成 20 秒重試一次（之前固定 2 分鐘，0xa69adf 在這 2 分鐘內從 63% 賣完） */
@@ -1627,7 +1631,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.7.6', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.7.7', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
