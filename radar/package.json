@@ -1,0 +1,12 @@
+{
+  "name": "robincat-radar",
+  "productName": "罗宾猫雷达",
+  "version": "3.0.0",
+  "description": "罗宾猫雷达 — BSC 与 Robinhood 链的 AI 热门项目雷达",
+  "main": "main.cjs",
+  "private": true,
+  "dependencies": {
+    "electron": "^33.4.11",
+    "qrcode": "^1.5.4"
+  }
+}
