@@ -1202,6 +1202,12 @@ function markUnmintable(c, P, sym, progress, why = '要官網簽名或白名單'
 function noteFail(c, P, sym, progress) { P.cf = (P.cf || 0) + 1; if (P.cf >= 8) markUnmintable(c, P, sym, progress, '模擬鑄造一直失敗，可能已賣完、要官網簽名、白名單或已關閉'); } // 重試 4 輪（兩個錢包）都失敗就不再試
 const agentCache = new Map(); // 地址 → 有沒有 .ai Agent ID
 async function rpcBatch(reqs) { const out = []; for (let i = 0; i < reqs.length; i += 100) { for (const u of ['https://bsc-rpc.publicnode.com', 'https://bsc-dataseed.bnbchain.org', 'https://bsc.publicnode.com']) { let got = 0; try { const j = await (await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(reqs.slice(i, i + 100).map((r, k) => ({ jsonrpc: '2.0', id: i + k, ...r }))), signal: AbortSignal.timeout(20000) })).json(); for (const r of (Array.isArray(j) ? j : [])) if (r.result !== undefined) { out[r.id] = r.result; got++; } } catch {} if (got) break; } } return out; } /* 除錯 11/1：只用一個節點，被限流時整批查不到 → Agent ID 人數算成 0（GOOSE 534 人在打卻顯示 0） */
+const NEWAG = { at: 0, set: new Set(), busy: false }, NONCE = new Map();
+async function newAgents() { /* v2.8.1 防小号凑数：24 小时内才注册的 Agent ID 钱包不算（从 Agent ID 合约的铸造纪录读，15 分钟更新一次） */
+  if (NEWAG.busy || Date.now() - NEWAG.at < 15 * 60e3) return NEWAG.set; NEWAG.busy = true;
+  try { const head = parseInt(await rpc('eth_blockNumber', []), 16); const set = new Set(); let ok = 0;
+    for (let b = head - 115200; b <= head; b += 5000) { const q = [{ address: '0x' + REGISTRY, fromBlock: '0x' + b.toString(16), toBlock: '0x' + Math.min(b + 4999, head).toString(16), topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x' + '0'.repeat(64)] }]; const L = await rpc('eth_getLogs', q).catch(() => logsRpc(q).catch(() => null)); if (L) { ok++; for (const l of L) if (l.topics?.[2]) set.add('0x' + l.topics[2].slice(26).toLowerCase()); } }
+    if (ok >= 20) { NEWAG.set = set; NEWAG.at = Date.now(); } } finally { NEWAG.busy = false; } return NEWAG.set; }
 async function heatOf(c, P) { // 算熱度：最近約 2.5 小時有幾個不同的 Agent ID 錢包參與鑄造，其中最近 3 分鐘幾個
   const head = parseInt(await rpc('eth_blockNumber', []), 16); let tok = ''; const tr = await call(c, '0xfc0c546a'); if (tr && tr.length >= 66 && BigInt(tr.slice(0, 66)) > 0n) tok = '0x' + tr.slice(26, 66).toLowerCase();
   const last = new Map(), txb = new Map(); const skip = new Set([c, tok, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead']);
@@ -1215,7 +1221,9 @@ async function heatOf(c, P) { // 算熱度：最近約 2.5 小時有幾個不同
   if (hashes.length) { const txs = await rpcBatch(hashes.map(([h]) => ({ method: 'eth_getTransactionByHash', params: [h] }))); hashes.forEach(([h, bn], i) => { const a = String(txs[i]?.from || '').toLowerCase(); if (!/^0x[0-9a-f]{40}$/.test(a) || skip.has(a)) return; if (!last.has(a) || last.get(a) < bn) last.set(a, bn); }); }
   const unknown = [...last.keys()].filter((a) => !agentCache.has(a)).slice(0, 400);
   if (unknown.length) { const res = await rpcBatch(unknown.map((a) => ({ method: 'eth_call', params: [{ to: '0x' + REGISTRY, data: '0x70a08231' + wa(a) }, 'latest'] }))); unknown.forEach((a, i) => { if (res[i] !== undefined) agentCache.set(a, !!res[i] && res[i].length >= 66 && BigInt(res[i].slice(0, 66)) > 0n); }); }
-  let agents = 0, burst = 0; for (const [a, bn] of last) if (agentCache.get(a)) { agents++; if (bn >= head - 400) burst++; }
+  const fresh = await newAgents().catch(() => new Set()); /* v2.8.1 防小号凑数：刚注册（24 小时内）的不算；交易次数少于 8 笔的不算 */
+  { const need = [...last.keys()].filter((a) => agentCache.get(a) && !fresh.has(a) && !(NONCE.get(a)?.n >= 8) && !(Date.now() - (NONCE.get(a)?.t || 0) < 30 * 60e3)).slice(0, 400); if (need.length) { const res = await rpcBatch(need.map((a) => ({ method: 'eth_getTransactionCount', params: [a, 'latest'] }))); need.forEach((a, i) => { if (res[i] !== undefined) NONCE.set(a, { n: parseInt(res[i], 16) || 0, t: Date.now() }); }); } }
+  let agents = 0, burst = 0; for (const [a, bn] of last) if (agentCache.get(a) && !fresh.has(a) && (NONCE.get(a)?.n ?? 99) >= 8) { agents++; if (bn >= head - 400) burst++; }
   P.agents = Math.max(P.agents || 0, agents); P.burst = burst; P.heatAt = Date.now();
 }
 const hk = (P) => (P.heatAt || 0) + (heatTier(P) >= 1 || (P.progress || 0) >= 0.2 ? 0 : 540e3);
@@ -1280,7 +1288,7 @@ async function paidLoop(mode = 'all', shard = null) {
   S.paid = S.paid || {}; S.dyn = S.dyn || []; S.paidSpend = S.paidSpend || {};
   if (S.missed && !S.missedClean1) { S.missedClean1 = 1; for (const [k, m] of Object.entries(S.missed)) if (String(m.why || '').includes('保本')) delete S.missed[k]; } /* 照規則不打的不算錯過 */
   if (S.progFixV !== 1) { S.progFixV = 1; for (const P of Object.values(S.paid || {})) if ((P.progress || 0) >= 0.999 && !P.progAt) { delete P.progress; delete P.swLog; } } /* 除錯 11/1（牛來）：舊的進度算法把它讀成 100%，被當成賣完、不再回頭看；進度算法修正後重新讀一次 */
-  if (S.agentsV !== 2) { S.agentsV = 2; for (const P of Object.values(S.paid || {})) { delete P.agents; delete P.heatAt; } } /* 逆向防護 11/1：參與人數改成只算送出交易的錢包，舊的（可能被空投灌過的）數字清掉重算 */
+  if (S.agentsV !== 3) { S.agentsV = 3; /* v2.8.1：排除小号后重新算 */ for (const P of Object.values(S.paid || {})) { delete P.agents; delete P.heatAt; } } /* 逆向防護 11/1：參與人數改成只算送出交易的錢包，舊的（可能被空投灌過的）數字清掉重算 */
   if (S.refundReset !== 1) { S.refundReset = 1; for (const P of Object.values(S.paid)) { delete P.refundOk; delete P.noRefundLog; } } /* 除錯 11/1：代理合約解析修正後，重新判斷一次有沒有退款機制 */
   const today = new Date().toDateString(); if (S.paidSpend.day !== today) S.paidSpend = { day: today };
   let price = 0;
@@ -1657,7 +1665,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.8.0', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.8.1', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
