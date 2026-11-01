@@ -1,0 +1,20 @@
+const { contextBridge, ipcRenderer } = require('electron');
+contextBridge.exposeInMainWorld('radar', {
+  snapshot: () => ipcRenderer.invoke('snapshot'),
+  pools: (n) => ipcRenderer.invoke('pools', n),
+  schema: () => ipcRenderer.invoke('schema'),
+  login: (i) => ipcRenderer.invoke('login', i),
+  copyGuide: () => ipcRenderer.invoke('copyGuide'),
+  plugins: () => ipcRenderer.invoke('plugins'),
+  journal: () => ipcRenderer.invoke('journal'),
+  donate: () => ipcRenderer.invoke('donate'),
+  copyText: (t) => ipcRenderer.invoke('copyText', t),
+  checkToken: (a) => ipcRenderer.invoke('checkToken', a),
+  exportJournal: (rows) => ipcRenderer.invoke('exportJournal', rows),
+  approvePlugin: (f, h) => ipcRenderer.invoke('approvePlugin', f, h),
+  saveSettings: (s) => ipcRenderer.invoke('saveSettings', s),
+  pause: (on) => ipcRenderer.invoke('pause', on),
+  order: (o) => ipcRenderer.invoke('order', o),
+  open: (u) => ipcRenderer.invoke('open', u),
+  notify: (t, b) => ipcRenderer.invoke('notify', t, b),
+});

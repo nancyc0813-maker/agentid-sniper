@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title Agent ID Sniper 一键安装
+title 罗宾猫雷达 一键安装
 echo.
 echo ==============================================
-echo   Agent ID Sniper 一键安装
+echo   罗宾猫雷达 一键安装
 echo   官方 TG 群：t.me/nancy_c0813
 echo ==============================================
 echo.
@@ -61,14 +61,25 @@ if "%NW%"=="2" (
 )
 del data_wallets.txt >nul 2>nul
 
+REM ---- 4.5 罗宾猫雷达（桌面视窗）----
+echo.
+echo [罗宾猫雷达] 正在安装桌面视窗（第一次大约要 1～3 分钟）...
+pushd radar
+call npm install --no-audit --no-fund
+popd
+node -e "const p=require('path'),fs=require('fs'),os=require('os');const d=p.join(os.homedir(),'Desktop');const f=p.join(d,'罗宾猫雷达.vbs');const t='CreateObject(\"WScript.Shell\").Run \"\"\"'+p.join(process.cwd(),'radar','启动罗宾猫雷达.vbs')+'\"\"\", 0, False\r\n';try{fs.writeFileSync(f,Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(t,'utf16le')]));console.log('桌面已建立「罗宾猫雷达」')}catch(e){console.log('建立桌面捷径失败，可以直接点 radar\\启动罗宾猫雷达.vbs')}"
+
 REM ---- 5. 开机自动启动 + 现在启动 ----
 echo.
 echo [5/5] 设定开机自动启动
 node -e "const p=require('path'),fs=require('fs');const f=p.join(process.env.APPDATA,'Microsoft','Windows','Start Menu','Programs','Startup','agentid-sniper.vbs');const t='CreateObject(\"WScript.Shell\").Run \"\"\"'+p.join(process.cwd(),'start_hidden.vbs')+'\"\"\", 0, False\r\n';fs.writeFileSync(f,Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(t,'utf16le')]));console.log('已设定开机自动启动')"
 start "" wscript "%~dp0start_hidden.vbs"
+start "" wscript "%~dp0radar\启动罗宾猫雷达.vbs"
 echo.
 echo ==============================================
-echo   ✅ 安装完成，工具已在背景运行
+echo   ✅ 安装完成，工具已在背景运行，罗宾猫雷达视窗也打开了
+echo   - 第一次打开雷达：看完须知、连接钱包、选你的打法，才会开始自动打
+echo   - 桌面上的「罗宾猫雷达」可以随时打开视窗
 echo   - 日志：data\watch.log
 echo   - 停止：在这个资料夹建立一个叫 WATCH_STOP 的文件
 echo   - 以后有新版会在 TG 提醒，回 /update 才会更新
