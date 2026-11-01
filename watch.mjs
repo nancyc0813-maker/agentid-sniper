@@ -69,8 +69,9 @@ async function toGroup(text) {
   /* 使用者 10/31 20:48：打到什麼都在大群通知（免費也發），開盤也通知 */
   if (!msg && /^🆓/u.test(text)) { const name = (text.match(/項目[：:]\s*([^\n（(]+)/) || [])[1]?.trim() || ''; msg = `🎁 打了免费项目：${name || '新项目'}\n合约：${ca}`; key = 'free:' + ca.toLowerCase(); }
   if (!msg && /^🚀/u.test(text) && text.includes('開池')) { const sym = (text.match(/^🚀\s*(\S+)/u) || [])[1] || ''; const tok = (text.match(/合約 (0x[a-fA-F0-9]{40})/) || [])[1] || ca; msg = `🚀 ${sym} 开盘了${(text.match(/開池了（([^）]+)）/) || [])[1] ? '（' + text.match(/開池了（([^）]+)）/)[1].replace('配對', '配对') + '）' : ''}\n合约：${tok}`; key = 'open:' + tok.toLowerCase(); }
+  if (!msg && /^⚠️ 很熱門但工具打不了/u.test(text)) { const m = text.match(/打不了：(.+?)（(\d+) 個錢包在打(?:，進度約 (\d+)%)?）/u); msg = `🔥 很热门但雷达打不了：${m?.[1] || '新项目'}${m ? `（${m[2]} 个钱包在打${m[3] ? `，进度约 ${m[3]}%` : ''}）` : ''}\n要的话请自己到官网手动打\n合约：${ca}`; key = 'hot:' + ca.toLowerCase(); }
   if (!msg || !ca) return;
-  { const cl = ca.toLowerCase(); S.grpOnce = S.grpOnce || {}; const gk = key.startsWith('open:') ? key : cl; if (S.grpOnce[gk]) return; S.grpOnce[gk] = 1; } /* 同一個合約群裡只播一次（打到／70% 擇一，開盤另外播） */
+  { const cl = ca.toLowerCase(); S.grpOnce = S.grpOnce || {}; const gk = (key.startsWith('open:') || key.startsWith('hot:')) ? key : cl; if (S.grpOnce[gk]) return; S.grpOnce[gk] = 1; } /* 同一個合約群裡只播一次（打到／70% 擇一，開盤另外播） */
   const now = Date.now(); if (groupSent.has(key) && now - groupSent.get(key) < 6 * 3600e3) return; groupSent.set(key, now);
   try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text: '📡 Agent ID 播报\n' + msg, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {}
 }
@@ -2024,7 +2025,7 @@ async function tgCmdLoop() {
         else if (/^(持倉|持仓|holdings?)$/i.test(txt)) { holdReport('📦 持倉').catch((e) => tgSay('⚠️ ' + e.message)); }
         else if (/^(暫停|暂停|pause)$/i.test(txt)) { writeFileSync(join(DIR, 'data', 'pause_buy.txt'), String(Date.now())); await tgSay('⏸ 已暂停自动买（卖出照常）。要恢复打「恢复」'); }
         else if (/^(恢復|恢复|resume)$/i.test(txt)) { try { unlinkSync(join(DIR, 'data', 'pause_buy.txt')); } catch {} await tgSay('▶ 已恢复自动买'); }
-        else if (/^\/?打\s+0x[0-9a-fA-F]{40}/.test(txt)) { const m = txt.match(/(0x[0-9a-fA-F]{40})\s*(\d+(?:\.\d+)?)?/); await tgSay('⚡ 收到，下單中…'); await tgSay(await tgBuy(m[1], m[2] || 10).catch((e) => '⚠️ 下單出錯：' + e.message)); } /* 11/1 22:55：/打 合約 10U */
+        else if (/^\/?(?:打|buy)\s+0x[0-9a-fA-F]{40}/i.test(txt)) { const m = txt.match(/(0x[0-9a-fA-F]{40})\s*(\d+(?:\.\d+)?)?/); await tgSay('⚡ 收到，下單中…'); await tgSay(await tgBuy(m[1], m[2] || 10).catch((e) => '⚠️ 下單出錯：' + e.message)); } /* 11/1 22:55：/打 合約 10U */
         else if (/^(戰績|战绩|統計|统计|stats?)$/i.test(txt)) { cmdStats().catch((e) => tgSay('⚠️ ' + e.message)); }
         else if (/^(update|更新)$/i.test(txt)) { if (!UPD.on) await tgSay('這個版本不自動更新'); else { await tgSay('⚡ 收到，下載新版並安檢中…'); await tgSay(await doUpdate().catch((e) => '⚠️ 更新出錯：' + e.message)); } }
         else if (/^(help|指令|說明|说明)$/i.test(txt)) await tgSay('可用指令：\n賣 XXX → 所有錢包全賣\n賣 XXX 一半 → 各賣一半\n（也可打「XXX 全出」「XXX 出一半」）\n餘額 → 看各錢包 BNB\n持倉 → 還沒賣的幣和現值\n戰績 → 上線以來打了多少、賣了多少');
