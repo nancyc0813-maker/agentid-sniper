@@ -84,7 +84,7 @@ export async function startPlugins(ctx) {
 
   for (const L of loaded) {
     const id = L.m.meta.id; const st = S.plug[id] = S.plug[id] || { pos: {}, spent: {}, state: {} };
-    const conf = () => { const z = radarSet(); const o = {}; for (const it of schemaItems.filter((x) => x.g === 'plug.' + id)) { const n = it.k.split('.').pop(); let v = z[it.k] ?? it.def; v = Number(v); if (!Number.isFinite(v)) v = it.def; o[n] = Math.min(it.max, Math.max(it.min, v)); } return o; };
+    const conf = () => { const z = radarSet(); const o = {}; for (const it of schemaItems.filter((x) => x.g === 'plug.' + id)) { const n = it.k.split('.').pop(); let v = z[it.k] ?? it.def; v = Number(v); if (!Number.isFinite(v)) v = it.def; o[n] = Math.min(it.max, Math.max(it.min, v)); } if (id === 'wallets') o.on = 1; /* 她 11/2 04:43：钱包总览只是看，不用开关，永远开着 */ return o; };
     const W0 = WALLETS[0]; const W = { ...W0, baw: async (args, to) => { const send = args[1] === 'swap' || args[1] === 'execute'; if (send) { for (let i = 0; i < 40 && ctx.walletBusy?.(); i++) await new Promise((z) => setTimeout(z, 500)); globalThis.PLUG_INFLIGHT = (globalThis.PLUG_INFLIGHT || 0) + 1; } try { return await W0.baw(args, to); } finally { if (send) globalThis.PLUG_INFLIGHT--; } } }; /* 11/2 她问「双方一起执行怎么办」：外挂送交易前先等雷达送完；雷达也会等外挂送完（同一个钱包一次只送一笔） */
     const gasOk = async () => (await balOf(W0, NATIVE)) >= (ctx.keepBnb ?? 0.006) + 0.002; /* BNB 是雷达付手续费、铸造用的，外挂不能把它用到不够 */
     let busy = false;
