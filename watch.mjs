@@ -304,6 +304,7 @@ async function holdW(W, head, onlyFast) { // 所有錢包同時跑（速戰：�
     const key = (W.addr === ME ? t.sym : W.name + ':' + t.sym) + (dupSym ? '#' + t.addr.slice(2, 8) : '');
     const st = (S.tokens[key] = S.tokens[key] || { hist: [], peak: 0, peakAt: 0, sold: 0 });
     if (onlyFast && !(st.openAt && Date.now() - st.openAt < RULE.fastMin * 60e3 && st.stage !== 9 && !st.done)) continue;
+    if (!onlyFast && st.openAt && Date.now() - st.openAt < RULE.fastMin * 60e3 && st.stage !== 9 && !st.done && st.pair) continue; /* v2.8.2：刚开盘 30 分钟内的只交给密集检查，完整检查跳过，避免重复部分卖出 */
     if (!onlyFast && st.done && st.doneAt && Date.now() - st.doneAt < 30 * 60e3) continue; /* v2.8.0：卖完（余额 0）的旧持仓 30 分钟才重查一次，整轮更快 */
     const balR = await call(t.addr, '0x70a08231' + wa(W.addr)); if (balR == null) continue; /* 查詢失敗不當成 0（以前會一直誤報「收到幣」） */ const bal = big(balR);
     const prevBal = BigInt(st.lastBal || '0'); st.lastBal = bal.toString();
@@ -1665,7 +1666,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.8.1', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.8.2', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
@@ -1820,7 +1821,7 @@ async function main() {
       const head = parseInt(await rpc('eth_blockNumber', []), 16);
       const tS = Date.now(); await scanNew(head); if (Date.now() - tS > 20e3) log(`掃描一輪花了 ${Math.round((Date.now() - tS) / 1000)} 秒`);
       if (!globalThis._openBusy && Date.now() - (globalThis._openAt || 0) > 15e3) { globalThis._openBusy = true; globalThis._openAt = Date.now(); openWatch(head).catch((e) => log('openWatch ' + e.message)).finally(() => { globalThis._openBusy = false; }); } /* v2.8.0：开盘侦测每 15 秒 */
-      { const fast = Object.values(S.tokens).some((st) => st.openAt && Date.now() - st.openAt < RULE.fastMin * 60e3 && st.stage !== 9 && !st.done); const full = Date.now() - lastHold > 5000; if (!globalThis._holdBusy && (fast || full)) { if (full) lastHold = Date.now(); globalThis._holdBusy = true; const tH = Date.now(); holdings(head, !full).catch((e) => log('holdings ' + e.message)).finally(() => { globalThis._holdBusy = false; if (Date.now() - tH > 20e3) log(`持倉檢查花了 ${Math.round((Date.now() - tH) / 1000)} 秒`); }); } } /* 持倉檢查放背景，同時只跑一個，避免重複賣 */
+      { const fast = Object.values(S.tokens).some((st) => st.openAt && Date.now() - st.openAt < RULE.fastMin * 60e3 && st.stage !== 9 && !st.done); const full = Date.now() - lastHold > 5000; if (!globalThis._holdBusy && full) { lastHold = Date.now(); globalThis._holdBusy = true; const tH = Date.now(); holdings(head, false).catch((e) => log('holdings ' + e.message)).finally(() => { globalThis._holdBusy = false; if (Date.now() - tH > 20e3) log(`持倉檢查花了 ${Math.round((Date.now() - tH) / 1000)} 秒`); }); } if (fast && !globalThis._fastBusy && Date.now() - (globalThis._fastAt || 0) > 15e3) { globalThis._fastBusy = true; globalThis._fastAt = Date.now(); holdings(head, true).catch((e) => log('holdings fast ' + e.message)).finally(() => { globalThis._fastBusy = false; }); } } /* v2.8.2：刚开盘 30 分钟内的币独立每 15 秒看价格，不再等完整检查跑完 */ /* 持倉檢查放背景，同時只跑一個，避免重複賣 */
       if (!globalThis._flapAt || Date.now() - globalThis._flapAt > 30e3) { globalThis._flapAt = Date.now(); if (!globalThis._flapBusy) { globalThis._flapBusy = true; flapAgentWatch().catch((e) => log('flap ' + e.message)).finally(() => { globalThis._flapBusy = false; }); } }
       if (!globalThis._toshAt || Date.now() - globalThis._toshAt > 60e3) { globalThis._toshAt = Date.now(); if (!globalThis._toshBusy) { globalThis._toshBusy = true; toshWatch().catch((e) => log('tosh ' + e.message)).finally(() => { globalThis._toshBusy = false; }); } }
       if (!globalThis._miscAt || Date.now() - globalThis._miscAt > 600e3) { globalThis._miscAt = Date.now(); lowBnbWatch().catch(() => {}); flapApprovalWatch().catch((e) => log('flapApproval ' + e.message)); } /* 每 10 分鐘看 BNB 夠不夠 */
