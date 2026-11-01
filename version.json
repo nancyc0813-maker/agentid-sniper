@@ -1,6 +1,6 @@
 {
  "version": "2.6.2",
- "sha256": "4c12d05e66aec09152424decec7a01a3172ea8cc177ea89270df65e4b49389c3",
+ "sha256": "402b3966184a1d9dbc72965002049919a100aab4ca23dc2d156228081d1a0e44",
  "notes": [
   "新增垃圾 NFT 检测：NFT 的图片连结是假的（像 ipfs://sniper-test-nft/1）或空的就不打，免费、付费都一样",
   "要 150 个以上 Agent ID 钱包在打才打（进度超过 80% 也一样要）"
