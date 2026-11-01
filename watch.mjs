@@ -712,6 +712,7 @@ async function autoMint(c, fname, W = WALLETS[0], val = 0n) {
   if (fp != null && !(S.xHits || {})[c]) globalThis.xCheck?.(c, S.paid?.[c]?.name || '').catch(() => {}); /* 通過鏈上條件的免費項目：背景去 X 查一下（只記錄／提醒，不擋） */
   if (fp == null && agentsN >= AG_MIN) { let tk = c; const tr0 = await call(c, '0xfc0c546a'); if (tr0 && tr0.length >= 66 && BigInt(tr0.slice(0, 66)) > 0n) tk = '0x' + tr0.slice(26, 66); if (await poolOpen(tk)) return '⏸ 讀不到進度、已經開池，不鑄造（鑄造通常比市價貴）'; }
   if (fp == null && agentsN < AG_MIN) { S.paid = S.paid || {}; if (!S.paid[c]) S.paid[c] = { at: Date.now(), name: '', done: {}, waitHot: 1 }; return `⏸ 讀不到進度，目前 ${agentsN} 個錢包在打，要 ${AG_MIN} 個以上才打，先追蹤`; }
+  if (val === 0n && await othersPay(c).catch(() => 0)) { S.paid = S.paid || {}; if (!S.paid[c]) S.paid[c] = { at: Date.now(), name: '', done: {} }; const P0 = S.paid[c]; P0.needLearn = 1; P0.freePhase = 1; if (P0.done) for (const W0 of WALLETS) if (P0.done[W0.name] === 'free-notify') delete P0.done[W0.name]; return '💱 第一份免費、大家都在付費打 → 改用付費規則（照抄別人的付費打法）'; } /* 使用者 11/1 18:50 */
   if (val === 0n) { await freeNotify(c, S.paid?.[c]?.name || '', fp, agentsN); return '🔔 免費項目達到條件，已通知（照規則不自動打）'; }
   if (val > 0n && (Number(val) / 1e18) * ((await bnbUsd().catch(() => 0)) || 700) > PAID.maxUsd) return `⏸ 手續費超過 ${PAID.maxUsd}U 上限，沒有鑄`;
   let d = Object.fromEntries(CANDS)[fname]; if (d && /重播|熱門函式/.test(fname)) d = freshDeadline(d); /* 照抄的免費鑄造也換新期限 */
@@ -1108,6 +1109,12 @@ async function nftStrict(c) {
   } catch { r = 'NFT 圖片檢查失敗'; }
   S.nftOk[c] = { t: Date.now(), r }; return r;
 }
+async function othersPay(c) { /* 使用者 11/1 18:50：「第一份免費、之後付費」（像牛來）要當付費看——看最近別人打它是不是大多有付 BNB */
+  S.othersPay = S.othersPay || {}; const k = S.othersPay[c]; if (k && Date.now() - k.t < 600e3) return k.v;
+  let v = 0; try { const head = parseInt(await rpc('eth_blockNumber', []), 16); const L = await logsRpc([{ address: c, fromBlock: '0x' + (head - 2000).toString(16), toBlock: '0x' + head.toString(16) }]).catch(() => []);
+    const hs = [...new Set((L || []).map((l) => l.transactionHash))].slice(-20); if (hs.length >= 5) { const txs = await rpcBatch(hs.map((h) => ({ method: 'eth_getTransactionByHash', params: [h] }))); const ok = txs.filter((t) => t && String(t.to || '').toLowerCase() === c); const paid = ok.filter((t) => BigInt(t.value || '0x0') > 0n).length; if (ok.length >= 5 && paid / ok.length >= 0.5) v = 1; } } catch {}
+  S.othersPay[c] = { t: Date.now(), v }; return v;
+}
 async function freeNotify(c, name, prog, agents) { /* 使用者 11/1 15:56：免費項目大多不會真的發射、還是壞人掏錢的入口 → 不自動打，達到條件只通知，使用者要打再手動 */
   S.freeNote = S.freeNote || {}; if (S.freeNote[c]) return; S.freeNote[c] = ts(); const ks = Object.keys(S.freeNote); if (ks.length > 3000) delete S.freeNote[ks[0]];
   let nm = name; if (!nm || /頻道項目/.test(nm)) nm = tokStr(await call(c, '0x95d89b41')) || tokStr(await call(c, '0x06fdde03')) || c.slice(0, 10);
@@ -1298,6 +1305,7 @@ async function paidLoop(mode = 'all', shard = null) {
     if (!forced) { const sd = await serialDev(c); if (sd) { if (!P.serialLog) { P.serialLog = 1; P.lastReason = sd + '，照規則不打'; if (S.missed?.[c]) delete S.missed[c]; log(`跳過 ${P.name || c}：${sd}，照規則不打`); } continue; } }
     { /* 使用者 11/1 01:56：風險變大了——付費項目一定要有保本機制（打不滿可以退款），沒有就不打。看合約（含代理背後的實作）有沒有退款函式 */
       const paying = !(kind === 'replay' && !(BigInt(P.replay?.value || '0') > 0n) && !P.replay?.payTok);
+      if (!forced && !paying && await othersPay(c).catch(() => 0)) { P.needLearn = 1; P.freePhase = 1; delete P.replay; continue; } /* 學到的是免費那份，但大家都在付費打 → 下輪重學付費的打法 */
       if (!forced && !paying) { await freeNotify(c, P.name, progress > 0 ? progress : null, P.agents).catch(() => {}); for (const W of WALLETS) P.done[W.name] = P.done[W.name] || 'free-notify'; continue; } /* 使用者 11/1 15:56：免費的只通知不自動打 */
       /* 使用者 11/1 17:54：保本（退款）不再是必要條件——最重要的是 100 個以上不同 Agent ID 錢包在打、進度過門檻；改成要有每個錢包上限 */
       if (!forced && paying && await isNft(c).catch(() => false)) { /* 使用者 11/1 18:36：NFT 要很嚴格 */ let why = ''; if (!(progress >= Math.max(GO_PCT, 0.7))) why = `NFT 進度要 70% 以上（現在 ${Math.round((progress || 0) * 100)}%）`; else if (!((P.agents || 0) >= Math.max(AG_MIN, 150))) why = `NFT 要 150 個以上 Agent ID 錢包在打（現在 ${P.agents || 0} 個）`; else if (!(await walletLimit(c, true))) why = 'NFT 一定要有「每個錢包上限」（只有每筆上限不算）'; else why = await nftStrict(c); if (why) { if (P.nftWhy !== why) { P.nftWhy = why; P.lastReason = why; log(`跳過 ${P.name || c}：${why}`); } continue; } P.isNftBuy = 1; }
@@ -1597,7 +1605,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.7.3', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.7.4', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
