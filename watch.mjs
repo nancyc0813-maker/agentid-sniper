@@ -239,6 +239,11 @@ async function flow(t, st, from, to) { // 新錢包數、成交筆數
 const decCache = new Map();
 async function tokDec(a) { if (!decCache.has(a)) { const r = await call(a, '0x313ce567'); const d = r && r.length >= 66 ? Number(BigInt(r.slice(0, 66))) : 18; decCache.set(a, d > 0 && d <= 36 ? d : 18); } return decCache.get(a); }
 function trackFromSim(W, sim, sym, costUsd) { /* 打到的代幣自動加入持倉監控（以前照抄型付費、手動補打不會加，像 币安无忧 就沒被追蹤）（使用者 10/31 20:13） */
+  { /* 使用者 11/1 18:15：付了錢成本卻記成 0（SENSEI 這次）→ 用模擬裡實際付出的 BNB／USDT 補算，並發警告 */
+    const paidBnb = (sim?.balanceChanges || []).filter((b) => String(b.owner).toLowerCase() === W.addr && String(b.contractAddress || '').toLowerCase().startsWith('0xeeee') && Number(b.change) < 0).reduce((x, b) => x - Number(b.change), 0) / 1e18;
+    const paidU = (sim?.balanceChanges || []).filter((b) => String(b.owner).toLowerCase() === W.addr && String(b.contractAddress || '').toLowerCase() === USDT && Number(b.change) < 0).reduce((x, b) => x - Number(b.change), 0) / 1e18;
+    if (!(costUsd > 0) && (paidBnb > 0 || paidU > 0)) { const px = S.lastBnbUsd || 600; costUsd = paidBnb * px + paidU; tg(`⚠️ [${W.name}] ${noLink(sym || '')} 有付錢（${paidBnb > 0 ? paidBnb.toFixed(4) + ' BNB ' : ''}${paidU > 0 ? paidU.toFixed(2) + ' USDT' : ''}）但當下讀不到價格，成本已改用估算 ${costUsd.toFixed(2)}U 記錄，照付費幣規則賣`).catch(() => {}); }
+  }
   try { for (const b of sim?.balanceChanges || []) { if (String(b.owner).toLowerCase() !== W.addr || !(Number(b.change) > 0)) continue; const a = String(b.contractAddress || '').toLowerCase(); if (!/^0x[0-9a-f]{40}$/.test(a) || a.startsWith('0xeeee') || a === USDT || a === WBNB) continue; if (String(b.tokenType || '') !== 'Erc20') continue; /* 只追蹤 ERC20 代幣，NFT 不追 */
     S.dyn = S.dyn || []; if (!S.dyn.some((t) => t.addr === a && t.only === W.addr)) { S.dyn.push({ sym: sym || a.slice(0, 8), addr: a, cost: +(costUsd || 0).toFixed(2), only: W.addr, boughtAt: Date.now() }); log(`[${W.name}] ${sym || a} 加入持倉監控（成本約 ${(costUsd || 0).toFixed(2)}U）`); } } } catch {}
 }
@@ -830,7 +835,7 @@ const codeCache = new Map();
 async function codeOf(a) { if (!codeCache.has(a)) codeCache.set(a, ((await rpc('eth_getCode', [a, 'latest']).catch(() => '')) || '').toLowerCase()); return codeCache.get(a); }
 async function bnbUsd() {
   const p = await call(FACTORY, '0xe6a43905' + wa(WBNB) + wa(USDT)); const pair = '0x' + (p || '').slice(26); const r = await call(pair, '0x0902f1ac'); const t0 = await call(pair, '0x0dfe1681');
-  if (!r || !t0) return 0; const a = BigInt(r.slice(0, 66)), b = BigInt('0x' + r.slice(66, 130)); return t0.slice(26) === WBNB.slice(2) ? Number(b) / Number(a) : Number(a) / Number(b);
+  if (!r || !t0) return S.lastBnbUsd || 0; const a = BigInt(r.slice(0, 66)), b = BigInt('0x' + r.slice(66, 130)); const px = t0.slice(26) === WBNB.slice(2) ? Number(b) / Number(a) : Number(a) / Number(b); if (px > 50 && px < 100000) S.lastBnbUsd = px; return px || S.lastBnbUsd || 0; /* 除錯 11/1：SENSEI 補打時節點剛好沒回 → BNB 價格 0 → NANCY.AI 成本記成 0U，被當成免費幣、2 倍沒賣回本；改成用上一次的價格 */
 }
 const tokStr = (r) => { try { const h = r.slice(2); const len = Number(BigInt('0x' + h.slice(64, 128))); return Buffer.from(h.slice(128, 128 + len * 2), 'hex').toString('utf8'); } catch { return ''; } };
 async function readLimit(W, c) { 
@@ -979,7 +984,7 @@ async function ownerHeavy(c, name) { /* 使用者 11/1 15:59：項目方自己�
 // ---------- TG 群組監控（選用，預設關閉；使用者 11/1 16:21）：用自己的 TG 帳號在本機「只讀」自己加入的群組；免費、不花 AI 用量 ----------
 // 要用的人自己執行 tg_login.bat（或 node watch.mjs --tg-login）登入一次；沒登入就完全不跑；只抓訊息裡的合約地址、統計幾個群在討論，不存訊息內容；打不打還是照鏈上規則
 // ---------- 群裡傳的熱門網址（使用者 11/1 17:47：大家越來越多是丟網址、不丟合約）----------
-const URL_SKIP = /(^|\.)(x\.com|twitter\.com|t\.me|telegram\.(org|me)|binance\.(com|info)|github\.com|dexscreener\.com|bscscan\.com|etherscan\.io|youtube\.com|youtu\.be|google\.com|gmgn\.ai|geckoterminal\.com|coingecko\.com|coinmarketcap\.com|four\.meme|pancakeswap\.finance|medium\.com|discord\.(gg|com)|instagram\.com|tiktok\.com|okx\.com|bitget\.com|debank\.com|dextools\.io|ave\.ai|mirror\.xyz|notion\.(so|site)|gitbook\.io|docs\.google\.com|linktr\.ee|bit\.ly|tinyurl\.com|facebook\.com|reddit\.com|weibo\.com|bilibili\.com|apple\.com|claude\.ai|openai\.com|chatgpt\.com)$/i;
+const URL_SKIP = /(^|\.)(x\.com|twitter\.com|t\.me|telegram\.(org|me)|binance\.(com|info)|github\.com|dexscreener\.com|bscscan\.com|etherscan\.io|youtube\.com|youtu\.be|google\.com|gmgn\.ai|geckoterminal\.com|coingecko\.com|coinmarketcap\.com|four\.meme|pancakeswap\.finance|medium\.com|discord\.(gg|com)|instagram\.com|tiktok\.com|okx\.com|bitget\.com|debank\.com|dextools\.io|ave\.ai|mirror\.xyz|notion\.(so|site)|gitbook\.io|docs\.google\.com|linktr\.ee|bit\.ly|tinyurl\.com|facebook\.com|reddit\.com|weibo\.com|bilibili\.com|apple\.com|claude\.ai|openai\.com|chatgpt\.com|pump\.fun|flap\.sh|axiom\.trade|bullx\.io|photon-sol\.tinyastro\.io|poocoin\.app|birdeye\.so|solscan\.io|basescan\.org|arbiscan\.io|tronscan\.org|dexview\.com|web3\.okx\.com|debot\.ai|xxyy\.io|binance\.us|bnbchain\.org)$/i; /* 逆向檢查 11/1：交易／瀏覽器類網站是一個網址底下有成千上萬個幣，整個網域合在一起算會誤報熱門 */
 function noteUrls(t, m, chatId) {
   const urls = [...(t.match(/https?:\/\/[^\s<>"'）)】]+/gi) || [])]; for (const e of m.entities || []) if (e.url) urls.push(e.url);
   for (const d of t.match(/\b[a-z0-9][a-z0-9-]{1,40}\.(xyz|fun|online|io|app|site|ai|top|meme|vip|pro|club|live|link|cc|me|world|tech|finance|money|gg|lol|wtf|bot|agent|net|org|com)\b/gi) || []) urls.push('https://' + d);
@@ -1539,7 +1544,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.7.0', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.7.1', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
