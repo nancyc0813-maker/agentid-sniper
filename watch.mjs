@@ -10,6 +10,18 @@ import { fileURLToPath } from 'node:url';
 const DIR = dirname(fileURLToPath(import.meta.url));
 const SELF = fileURLToPath(import.meta.url), SELF_MT = statSync(SELF).mtimeMs;
 const LOG = join(DIR, 'data', 'watch.log'), STATE = join(DIR, 'data', 'watch_state.json');
+if (process.argv.includes('--tg-login')) { /* 選用功能：TG 群組監控的一次性登入（金鑰、手機、登入碼都由使用者自己在這個視窗輸入，只存在本機 data/tg_user.json） */
+  const { createRequire } = await import('node:module'); const req = createRequire(import.meta.url); const rl = (await import('node:readline')).createInterface({ input: process.stdin, output: process.stdout }); const ask = (q) => new Promise((r) => rl.question(q, (x) => r(x.trim())));
+  try { req.resolve('telegram'); } catch { console.log('第一次使用，正在安裝 TG 套件（約 20MB）…'); (await import('node:child_process')).execSync('npm i telegram@2.26.22 --no-audit --no-fund', { cwd: DIR, stdio: 'inherit', shell: true }); }
+  const { TelegramClient } = req('telegram'); const { StringSession } = req('telegram/sessions');
+  console.log('=== TG 群組監控：一次性登入（只讀你加入的群，不會發任何訊息）===\n先到 my.telegram.org 網站 → API development tools 建立一個 App（平台選 Desktop），就會看到 api_id 和 api_hash\n');
+  const apiId = Number(await ask('api_id（一串數字）：')), apiHash = await ask('api_hash（一串英文數字）：');
+  if (!apiId || !/^[0-9a-f]{32}$/i.test(apiHash)) { console.log('格式不對，請重新執行'); process.exit(1); }
+  const cl = new TelegramClient(new StringSession(''), apiId, apiHash, { connectionRetries: 3 });
+  await cl.start({ phoneNumber: () => ask('手機號碼（含國碼、去掉開頭的 0，例如 +886912345678）：'), phoneCode: () => ask('登入碼（在 TG App 裡官方「Telegram」帳號傳給你的訊息）：'), password: () => ask('兩步驟驗證密碼（沒設定就直接按 Enter）：'), onError: (e) => console.log('錯誤：', e.message) });
+  mkdirSync(join(DIR, 'data'), { recursive: true }); writeFileSync(join(DIR, 'data', 'tg_user.json'), JSON.stringify({ apiId, apiHash, session: cl.session.save() }));
+  console.log('\n✅ 登入成功，工具會自動讀你加入的群組（只讀不發）。這個視窗可以關掉了。\n⚠️ data/tg_user.json 等於你的 TG 登入，不要傳給別人；不想用了就刪掉這個檔案。'); await cl.disconnect(); rl.close(); process.exit(0);
+}
 { /* 審查 11/1：同時跑兩份會重複鑄造、重複賣、互相覆蓋紀錄 → 只允許一份在跑 */ const lk = join(DIR, 'data', 'watch.lock'); try { const old = existsSync(lk) ? Number(readFileSync(lk, 'utf8')) : 0; if (old && old !== process.pid) { let alive = false; try { process.kill(old, 0); alive = true; } catch {} if (alive) { console.log(`已經有一份在執行（PID ${old}），這份不重複啟動`); process.exit(0); } } writeFileSync(lk, String(process.pid)); process.on('exit', () => { try { if (Number(readFileSync(lk, 'utf8')) === process.pid) unlinkSync(lk); } catch {} }); } catch {} }
 const ts = () => new Date().toLocaleString('zh-TW', { hour12: false, timeZone: CONFIG.timeZone || 'Asia/Taipei' });
 const log = (s) => { try { appendFileSync(LOG, `[${ts()}] ${s}\n`); } catch {} };
@@ -959,12 +971,45 @@ async function ownerHeavy(c, name) { /* 使用者 11/1 15:59：項目方自己�
   const who = new Set(); const ow = await call(c, '0x8da5cb5b'); if (ow && ow.length >= 66 && BigInt(ow.slice(0, 66)) > 0n) who.add('0x' + ow.slice(26, 66).toLowerCase()); const dep = (S.depFrom || {})[c]; if (dep) who.add(dep.toLowerCase());
   for (const a of who) { const code = ((await rpc('eth_getCode', [a, 'latest']).catch(() => '0x')) || '0x'); if (code.length > 2) continue; const b = big(await call(tok, '0x70a08231' + wa(a))); const pct = Number((b * 10000n) / ts0) / 100; if (pct > 30) { log(`⚠️ ${name || c}：項目方錢包 ${a.slice(0, 10)}… 持有 ${pct}% 的幣`); await tg(`⚠️ ${name || c} 達到進場條件，但項目方錢包自己持有 ${pct}% 的幣，開池後可能被砸盤（目前只警告、照規則還是會打）\n${c}`); return; } }
 }
+// ---------- TG 群組監控（選用，預設關閉；使用者 11/1 16:21）：用自己的 TG 帳號在本機「只讀」自己加入的群組；免費、不花 AI 用量 ----------
+// 要用的人自己執行 tg_login.bat（或 node watch.mjs --tg-login）登入一次；沒登入就完全不跑；只抓訊息裡的合約地址、統計幾個群在討論，不存訊息內容；打不打還是照鏈上規則
+let _tgc = null, _tgBusy = false, _tgDialogsAt = 0, _tgDialogs = [];
+async function tgGroupWatch() {
+  const f = join(DIR, 'data', 'tg_user.json'); if (!existsSync(f) || _tgBusy) return; _tgBusy = true;
+  try {
+    if (!_tgc) { const { createRequire } = await import('module'); const req = createRequire(import.meta.url); const { TelegramClient } = req('telegram'); const { StringSession } = req('telegram/sessions'); const u = JSON.parse(readFileSync(f, 'utf8')); _tgc = new TelegramClient(new StringSession(u.session), u.apiId, u.apiHash, { connectionRetries: 5 }); try { _tgc.setLogLevel('none'); } catch {} await _tgc.connect(); log('TG 群組監控：已連線（只讀）'); }
+    if (Date.now() - _tgDialogsAt > 600e3) { _tgDialogs = (await _tgc.getDialogs({ limit: 300 })).filter((d) => d.isGroup || d.isChannel); _tgDialogsAt = Date.now(); try { writeFileSync(join(DIR, 'data', 'tg_groups.txt'), _tgDialogs.map((d) => `${d.isChannel && !d.isGroup ? '頻道' : '群組'}\t${d.entity?.username ? '@' + d.entity.username : '-'}\t${String(d.title || d.name || '').replace(/\s+/g, ' ')}`).join('\n')); } catch {} }
+    S.tgLast = S.tgLast || {}; S.grpHits = S.grpHits || {}; let n = 0;
+    for (const d of _tgDialogs) {
+      const id = String(d.id); const top = d.message?.id || 0; const last = S.tgLast[id];
+      if (last == null) { S.tgLast[id] = top; continue; } /* 第一次只記位置，不回頭讀舊訊息 */
+      if (top <= last) continue; if (n++ >= 12) break; /* 每分鐘最多讀 12 個有新訊息的群，慢慢讀 */
+      await sleep(1500);
+      const msgs = await _tgc.getMessages(d.entity, { limit: 50, minId: last }).catch(() => []);
+      let mx = last; for (const m of msgs) { if (m.id > mx) mx = m.id; const t = String(m.message || ''); for (const c of new Set((t.match(/0x[a-fA-F0-9]{40}/g) || []).map((x) => x.toLowerCase()))) { if (INFRA.has(c)) continue; const h = (S.grpHits[c] = S.grpHits[c] || { chats: {}, first: Date.now(), names: [] }); h.chats[id] = Date.now(); const nm = String(d.title || d.name || '').slice(0, 20); if (nm && !h.names.includes(nm)) h.names.push(nm); } }
+      S.tgLast[id] = Math.max(mx, top);
+    }
+    for (const [c, h] of Object.entries(S.grpHits)) {
+      for (const [k, t] of Object.entries(h.chats)) if (Date.now() - t > 86400e3) delete h.chats[k];
+      const cnt = Object.keys(h.chats).length; if (!cnt && Date.now() - h.first > 86400e3) { delete S.grpHits[c]; continue; }
+      if (cnt >= 3 && !h.noted) { h.noted = 1; const code = ((await rpc('eth_getCode', [c, 'latest']).catch(() => '')) || ''); if (code.length <= 2) continue;
+        let nm = tokStr(await call(c, '0x95d89b41')) || tokStr(await call(c, '0x06fdde03')) || c.slice(0, 10);
+        S.paid = S.paid || {}; if (!S.paid[c]) S.paid[c] = { at: Date.now(), name: nm, done: {}, fromGroups: cnt };
+        log(`💬 TG 群組熱議：${nm} ${c} 24 小時內有 ${cnt} 個群在討論（${h.names.slice(0, 5).join('、')}），加入追蹤，照鏈上規則決定打不打`);
+        await tg(`💬 ${cnt} 個 TG 群在討論：${nm}\n${h.names.slice(0, 5).join('、')}\n${c}\n已加入追蹤，打不打照鏈上規則（進度、Agent ID 錢包數、保本）`); }
+    }
+    const ks = Object.keys(S.grpHits); if (ks.length > 5000) for (const k of ks.slice(0, ks.length - 5000)) delete S.grpHits[k];
+  } catch (e) { log('TG 群組監控：' + String(e.message || e).slice(0, 100)); if (/AUTH_KEY|SESSION|UNREGISTERED|revoked/i.test(String(e.message))) { _tgc = null; if (!S.tgAuthWarn || Date.now() - S.tgAuthWarn > 86400e3) { S.tgAuthWarn = Date.now(); await tg('⚠️ TG 群組監控登入失效了，請重新執行 tg_login.bat（或在工具資料夾執行 node watch.mjs --tg-login）'); } } }
+  finally { _tgBusy = false; }
+}
+setInterval(() => { tgGroupWatch().catch(() => {}); }, 60e3);
+const grpN = (c) => Object.keys(S.grpHits?.[c]?.chats || {}).length; const grpTxt = (c) => { const n = grpN(c); return n ? `\n💬 ${n} 個 TG 群在討論${(S.grpHits[c].names || []).length ? '（' + S.grpHits[c].names.slice(0, 3).join('、') + '）' : ''}` : ''; }; /* 使用者 11/1 16:35：通知附上群組熱度 */
 async function freeNotify(c, name, prog, agents) { /* 使用者 11/1 15:56：免費項目大多不會真的發射、還是壞人掏錢的入口 → 不自動打，達到條件只通知，使用者要打再手動 */
   S.freeNote = S.freeNote || {}; if (S.freeNote[c]) return; S.freeNote[c] = ts(); const ks = Object.keys(S.freeNote); if (ks.length > 3000) delete S.freeNote[ks[0]];
   let nm = name; if (!nm || /頻道項目/.test(nm)) nm = tokStr(await call(c, '0x95d89b41')) || tokStr(await call(c, '0x06fdde03')) || c.slice(0, 10);
   const nj = await nftJunk(c).catch(() => ''); if (nj) { log(`免費項目 ${nm} 達到條件但 ${nj}，不通知`); return; }
   log(`🔔 免費項目達到條件（只通知、不自動打）：${nm} ${c}`);
-  await tg(`🔔 免費項目達到條件（照規則不自動打）：${nm}\n進度 ${prog != null ? Math.floor(prog * 100) + '%' : '讀不到'} · ${agents || 0} 個 Agent ID 錢包在打\n${c}\n${UPD.on ? '要打的話請自己手動鑄造' : '要打的話手動處理「打 ' + nm + '」'}`);
+  await tg(`🔔 免費項目達到條件（照規則不自動打）：${nm}\n進度 ${prog != null ? Math.floor(prog * 100) + '%' : '讀不到'} · ${agents || 0} 個 Agent ID 錢包在打${grpTxt(c)}\n${c}\n${UPD.on ? '要打的話請自己手動鑄造' : '要打的話手動處理「打 ' + nm + '」'}`);
 }
 async function nftJunk(c) { /* 使用者 11/1 15:03：NFT 的圖片連結是假的或空的（像 ipfs://sniper-test-nft/1）就不打——批量掏手續費的垃圾項目連圖都沒做 */
   S.nftJunk = S.nftJunk || {}; if (S.nftJunk[c] != null) return S.nftJunk[c];
@@ -1092,7 +1137,7 @@ async function paidLoop(mode = 'all', shard = null) {
   // 進度 ≥40% 的（快滿的）每輪都看，不跟其他一百多個排隊；其餘輪流，每輪補到 16 個
   const all = Object.entries(S.paid);
   
-  const hotP = all.filter(([c, P]) => FORCE.has(c) || (((P.progress || 0) >= 0.45 || (fpCache.get(c)?.p || 0) >= 0.45 || (!(P.progress > 0) && Math.max(P.agents || 0, HOT.get(c)?.from.size || 0) >= 70)) && (P.progress || 0) < 0.999 && !P.unmintable)).filter(([c, P]) => !WALLETS.every((W) => P.done[W.name])).sort((a, b) => (b[1].progress || 0) - (a[1].progress || 0) || (b[1].agents || 0) - (a[1].agents || 0)).slice(0, 12); /* 使用者 10/31 20:29：快速檢查只看快到門檻的（進度 ≥45%，或讀不到進度但已 70 個以上錢包），最多 12 個，避免越來越慢 */
+  const hotP = all.filter(([c, P]) => FORCE.has(c) || ((grpN(c) >= 3 || (P.progress || 0) >= 0.45 || /* 使用者 11/1 16:35：3 個以上 TG 群在討論的也放進每 15 秒的快速檢查 */ (fpCache.get(c)?.p || 0) >= 0.45 || (!(P.progress > 0) && Math.max(P.agents || 0, HOT.get(c)?.from.size || 0) >= 70)) && (P.progress || 0) < 0.999 && !P.unmintable)).filter(([c, P]) => !WALLETS.every((W) => P.done[W.name])).sort((a, b) => (b[1].progress || 0) - (a[1].progress || 0) || (b[1].agents || 0) - (a[1].agents || 0)).slice(0, 12); /* 使用者 10/31 20:29：快速檢查只看快到門檻的（進度 ≥45%，或讀不到進度但已 70 個以上錢包），最多 12 個，避免越來越慢 */
   // 快速檢查（mode='hot'）每 15 秒只看快滿／很熱的；一般檢查（mode='rest'）另外在背景約每分鐘輪流看其他的，互不拖慢
   const rest = mode === 'hot' ? [] : all.filter((e) => !hotP.includes(e)).sort((a, b) => (a[1].lastTry || 0) - (b[1].lastTry || 0)).slice(0, 16);
   const ents = mode === 'rest' ? rest : mode === 'hot' ? (shard == null ? hotP : hotP.filter((e, i) => i % 3 === shard)) : hotP.concat(rest); /* 快速檢查分 3 組同時跑（審查修正：一個一個查要 1 分多鐘） */
@@ -1206,7 +1251,7 @@ async function paidLoop(mode = 'all', shard = null) {
           const paidU = (r.sim?.balanceChanges || []).filter((b) => String(b.owner).toLowerCase() === W.addr && String(b.contractAddress).toLowerCase() === USDT && Number(b.change) < 0).reduce((a, b) => a - Number(b.change), 0) / 1e18; const usd = paidU > 0 ? paidU : Number(need) / 1e18; S.paidSpend[W.name] = spent + usd / price; P.done[W.name] = 'minted'; /* 記實際扣掉的 USDT */
           if (paidU > 0 && paidU < (Number(need) / 1e18) * 0.99) previewExec(W, USDT, '0x095ea7b3' + wa(c) + w(0n), 0n, () => '').catch(() => {}); /* 授權沒用完就收回 */
           if (tokAddr && !S.dyn.some((t) => t.addr === tokAddr.toLowerCase() && t.only === W.addr)) S.dyn.push({ sym, addr: tokAddr.toLowerCase(), cost: +usd.toFixed(2), only: W.addr, deployer: P.deployer, boughtAt: Date.now() });
-          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}（照別人的方式，付 USDT）\n花約 ${usd.toFixed(2)} USDT · ${progress > 0 ? '進度約 ' + Math.round(progress * 100) + '%' : '最近 ' + (P.replay.hot || 0) + ' 個錢包在打'}\n${c}\n交易 ${r.tx}`);
+          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}（照別人的方式，付 USDT）${grpTxt(c)}\n花約 ${usd.toFixed(2)} USDT · ${progress > 0 ? '進度約 ' + Math.round(progress * 100) + '%' : '最近 ' + (P.replay.hot || 0) + ' 個錢包在打'}\n${c}\n交易 ${r.tx}`);
           return;
         }
         if (kind === 'replay') {
@@ -1238,7 +1283,7 @@ async function paidLoop(mode = 'all', shard = null) {
           S.paidSpend[W.name] = spent + vb; P.done[W.name] = 'minted';
           if (!(v > 0n)) { trackFromSim(W, r.sim, sym, 0); noteFree(c, W, sym); return; }
           trackFromSim(W, r.sim, sym, vb * price); 
-          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}（照別人的鑄造方式）\n花 ${vb.toFixed(4)} BNB（約 ${(vb * price).toFixed(1)}U）· 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}`);
+          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}（照別人的鑄造方式）${grpTxt(c)}\n花 ${vb.toFixed(4)} BNB（約 ${(vb * price).toFixed(1)}U）· 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}`);
           return;
         }
         if (kind === 'recv') {
@@ -1271,7 +1316,7 @@ async function paidLoop(mode = 'all', shard = null) {
           });
           const vb = Number(costWei) / 1e18; S.paidSpend[W.name] = spent + vb; P.done[W.name] = 'minted';
           trackFromSim(W, r.sim, sym, vb * price);
-          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}\n${n} 份，花 ${vb.toFixed(4)} BNB（約 ${(vb * price).toFixed(1)}U）· 進度約 ${Math.round(progress * 100)}%（${sold ?? '?'}／${cap ?? '?'}）\n${c}\n交易 ${r.tx}`);
+          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}${grpTxt(c)}\n${n} 份，花 ${vb.toFixed(4)} BNB（約 ${(vb * price).toFixed(1)}U）· 進度約 ${Math.round(progress * 100)}%（${sold ?? '?'}／${cap ?? '?'}）\n${c}\n交易 ${r.tx}`);
           return;
         }
         if (kind === 'bnb') {
@@ -1291,7 +1336,7 @@ async function paidLoop(mode = 'all', shard = null) {
           }, async () => { const q2 = await call(c, '0x68bce8cd' + w(n)); const c2 = q2 ? BigInt(q2.slice(0, 66)) : 0n; return c2 > (costWei * 105n) / 100n ? '價格剛剛漲了超過 5%' : ''; }); /* 新功能：送出前再查一次價格 */
           S.paidSpend[W.name] = spent + vb; P.done[W.name] = 'minted';
           const usd = vb * price; const tka = tokAddr && !/^0x0{40}$/i.test(tokAddr) ? tokAddr : tokAddr0; if (!tka) trackFromSim(W, r.sim, sym, usd); /* 審查 11/1：合約沒有 token() 時以前不會加入持倉，賣出規則都不會跑 */ if (tka && !S.dyn.some((x) => x.addr === tka.toLowerCase() && x.only === W.addr)) S.dyn.push({ sym, addr: tka.toLowerCase(), cost: +usd.toFixed(2), only: W.addr, deployer: P.deployer, boughtAt: Date.now(), ...(FORCE.has(c) ? { hold: true } : {}) }); // 使用者指定的項目照免費幣處理：只通知不自動賣
-          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}\n${n} 份，花 ${vb.toFixed(4)} BNB（約 ${usd.toFixed(1)}U）· 已售 ${sold ?? '?'} 份 · 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}\n已加入監控：${ruleTxt()}`);
+          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}${grpTxt(c)}\n${n} 份，花 ${vb.toFixed(4)} BNB（約 ${usd.toFixed(1)}U）· 已售 ${sold ?? '?'} 份 · 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}\n已加入監控：${ruleTxt()}`);
         } else {
           for (; n >= 1; n--) { const q = await call(c, '0x725c4058' + w(n)); costWei = q ? BigInt(q.slice(0, 66)) : 0n; if (costWei > 0n && price && ((Number(costWei) / 1e18) * 1.03) / price <= bal - PAID.keepBnb && Number(costWei) / 1e18 <= PAID.maxUsd) break; }
           if (n < 1) { P.lastReason = '每份太貴，超過 20U 預算'; return; } // 太貴：先不打（進度到 85% 後上限會放寬到 25U，會再檢查）
@@ -1315,7 +1360,7 @@ async function paidLoop(mode = 'all', shard = null) {
           }, async () => { const q2 = await call(c, '0x725c4058' + w(n)); const c2 = q2 ? BigInt(q2.slice(0, 66)) : 0n; return c2 > (costWei * 105n) / 100n ? '價格剛剛漲了超過 5%' : ''; })); /* 新功能：送出前再查一次價格 */
           S.paidSpend[W.name] = spent + needBnb; P.done[W.name] = 'minted';
           const tku = tokAddr && !/^0x0{40}$/i.test(tokAddr) ? tokAddr : tokAddr0; if (!tku) trackFromSim(W, r.sim, sym, cu); if (tku && !S.dyn.some((x) => x.addr === tku.toLowerCase() && x.only === W.addr)) S.dyn.push({ sym, addr: tku.toLowerCase(), cost: +cu.toFixed(2), only: W.addr, deployer: P.deployer, boughtAt: Date.now() });
-          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}\n${n} 份，花 ${cu.toFixed(2)} USDT（由 BNB 換）· 已售 ${sold ?? '?'} 份 · 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}\n已加入監控：${ruleTxt()}`);
+          await tg(`🛒 [${W.name}] 自動打了付費 Agent ID 項目：${sym}${grpTxt(c)}\n${n} 份，花 ${cu.toFixed(2)} USDT（由 BNB 換）· 已售 ${sold ?? '?'} 份 · 進度約 ${Math.round(progress * 100)}%\n${c}\n交易 ${r.tx}\n已加入監控：${ruleTxt()}`);
         }
       } catch (e) { if (e.message.includes('結果不明')) { P.done[W.name] = 'unknown'; log(`paid ${c} ${W.name} ${e.message}`); await tg(`⚠️ [${W.name}] ${sym} 送出結果不明（逾時），為避免重打已停止，請到錢包確認有沒有打到\n${c}`); return; } if (e.message.includes('已開池')) { P.done[W.name] = 'pool-cheaper'; log(`paid ${c} ${W.name} ${e.message}`); return; } if (/價格剛剛漲了/.test(e.message)) { log(`paid ${c} ${W.name} ${e.message}（下一輪再打）`); return; } P.failW = P.failW || {}; P.failW[W.name] = (P.failW[W.name] || 0) + 1; P.fail = (P.fail || 0) + 1; log(`paid ${c} ${W.name} ${e.message}`); if (kind === 'replay' && P.fail >= 6) { markUnmintable(c, P, sym, progress, '照別人的方式預演一直失敗'); return; } /* 審查 11/1：照抄型 2 次失敗就放棄太快、價格變動不算失敗、失敗按錢包算 */ if (P.failW[W.name] >= 6) { P.done[W.name] = 'fail'; await tg(`⚠️ [${W.name}] 付費項目 ${sym} 自動打失敗，已放棄：${e.message.slice(0, 150)}\n${c}`); } }
     }));
@@ -1438,7 +1483,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.6.5', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.6.6', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
