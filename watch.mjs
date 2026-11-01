@@ -693,6 +693,7 @@ async function autoMint(c, fname, W = WALLETS[0], val = 0n) {
   const agentsN = S.paid?.[c]?.agents || 0; /* 審查 11/1：只算 Agent ID 錢包 */ /* 使用者 10/31 19:45：免費也一樣——進度過 60% 才打；讀不到進度要 100 個以上錢包在打 */
   if (fp != null && fp < GO_PCT) { /* 使用者 11/1 02:37：門檻 60% */ S.paid = S.paid || {}; if (!S.paid[c]) S.paid[c] = { at: Date.now(), name: '', done: {}, waitHot: 1 }; return `⏸ 進度 ${Math.floor(fp * 100)}%，還沒到 ${Math.round(GO_PCT * 100)}%，先追蹤，到了就打`; }
   if (fp != null && agentsN < AG_MIN) { S.paid = S.paid || {}; if (!S.paid[c]) S.paid[c] = { at: Date.now(), name: '', done: {}, waitHot: 1 }; return `⏸ 進度 ${Math.floor(fp * 100)}% 夠了，但只有 ${agentsN} 個 Agent ID 錢包在打（要 ${AG_MIN} 個以上，防項目方自己灌進度），先追蹤`; }
+  if (fp != null && !(S.xHits || {})[c]) globalThis.xCheck?.(c, S.paid?.[c]?.name || '').catch(() => {}); /* 通過鏈上條件的免費項目：背景去 X 查一下（只記錄／提醒，不擋） */
   if (fp == null && agentsN >= AG_MIN) { let tk = c; const tr0 = await call(c, '0xfc0c546a'); if (tr0 && tr0.length >= 66 && BigInt(tr0.slice(0, 66)) > 0n) tk = '0x' + tr0.slice(26, 66); if (await poolOpen(tk)) return '⏸ 讀不到進度、已經開池，不鑄造（鑄造通常比市價貴）'; }
   if (fp == null && agentsN < AG_MIN) { S.paid = S.paid || {}; if (!S.paid[c]) S.paid[c] = { at: Date.now(), name: '', done: {}, waitHot: 1 }; return `⏸ 讀不到進度，目前 ${agentsN} 個錢包在打，要 ${AG_MIN} 個以上才打，先追蹤`; }
   if (val > 0n && (Number(val) / 1e18) * ((await bnbUsd().catch(() => 0)) || 700) > PAID.maxUsd) return `⏸ 手續費超過 ${PAID.maxUsd}U 上限，沒有鑄`;
@@ -1118,7 +1119,7 @@ async function paidLoop(mode = 'all', shard = null) {
       if (!forced && paying && await upgradeable(c).catch(() => false)) { if (!P.upgLog) { P.upgLog = 1; P.lastReason = '可升級合約，保本機制可能被換掉，照風控不打'; log(`跳過 ${P.name || c}：可升級代理合約（項目方能事後換掉保本機制），照風控不打`); } continue; }
     }
     const gate = forced || (progress >= GO_PCT && (P.agents || 0) >= AG_MIN) || crowdGo; /* 使用者 11/1 14:48：進度夠也要很多 Agent ID 錢包在打 */ /* 進度過 50%：之前的防釣魚規矩全部不看（只留貔貅類安全檢查：模擬、授權、資產、Flap） */
-    if (!forced && !P.goLogged) { P.goLogged = 1; log(`進場 ${c}：${progress >= GO_PCT ? '進度過 ' + Math.round(GO_PCT * 100) + '%' : '讀不到進度、' + AG_MIN + ' 個以上錢包在打'}（累計 ${P.agents || 0} 個代理人、3 分鐘 ${P.burst || 0} 個），進度 ${progress > 0 ? Math.round(progress * 100) + '%' : '讀不到'}`); }
+    if (!forced && !P.goLogged) { P.goLogged = 1; globalThis.xCheck?.(c, P.name).catch(() => {}); log(`進場 ${c}：${progress >= GO_PCT ? '進度過 ' + Math.round(GO_PCT * 100) + '%' : '讀不到進度、' + AG_MIN + ' 個以上錢包在打'}（累計 ${P.agents || 0} 個代理人、3 分鐘 ${P.burst || 0} 個），進度 ${progress > 0 ? Math.round(progress * 100) + '%' : '讀不到'}`); }
     // 防釣魚：① 同款合約 24 小時內被部署 3 次以上（批量發盤）不打 ② 進度要是很多人打出來的（至少 20 個不同錢包），不是項目方自己刷的
     if (!gate) { const dep = P.deployer !== undefined ? P.deployer : await deployerOf(c); P.deployer = dep;
       if (dep && !(S.devs?.[dep] || []).some((x) => x.c === c)) noteDev(dep, c);
