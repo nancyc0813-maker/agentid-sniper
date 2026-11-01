@@ -703,6 +703,7 @@ async function autoMint(c, fname, W = WALLETS[0], val = 0n) {
   { const sd = await serialDev(c); if (sd) return `⛔ ${sd}，照規則不打`; }
   if (val > 0n) { /* 使用者 11/1 14:16：「付手續費的免費」一律當付費——今天被這種小項目掏了約 0.195 BNB；要付錢就必須有保本（退款）機制才打 */
     if (!(await walletLimit(c))) return `⏸ 要付 ${Number(val) / 1e18} BNB 手續費（當付費），但合約沒有每個錢包上限的規定，照規則不打`; /* 使用者 11/1 17:54 */
+    if (await isNft(c).catch(() => false)) { const fpN = await freeProgress(c); const agN = S.paid?.[c]?.agents || 0; if (!(fpN >= Math.max(GO_PCT, 0.7)) || agN < Math.max(AG_MIN, 150)) return '⏸ NFT 要進度 70%、150 個錢包以上才打'; if (!(await walletLimit(c, true))) return '⏸ NFT 一定要有「每個錢包上限」，照規則不打'; const nw = await nftStrict(c); if (nw) return '⏸ ' + nw + '，照規則不打'; }
   }
   const fp = await freeProgress(c);
   const agentsN = S.paid?.[c]?.agents || 0; /* 審查 11/1：只算 Agent ID 錢包 */ /* 使用者 10/31 19:45：免費也一樣——進度過 60% 才打；讀不到進度要 100 個以上錢包在打 */
@@ -1067,12 +1068,45 @@ const grpN = (c) => Object.keys(S.grpHits?.[c]?.chats || {}).length; const grpTx
 const paidDayUsd = (W) => { const d = new Date().toDateString(); if (!S.paidUsd || S.paidUsd.d !== d) S.paidUsd = { d }; return S.paidUsd[W.name] || 0; };
 const addPaidUsd = (W, u) => { paidDayUsd(W); S.paidUsd[W.name] = (S.paidUsd[W.name] || 0) + (Number(u) || 0); save(); };
 const LIMIT_NAMES = ['maxPerWallet', 'maxMintPerWallet', 'MAX_PER_WALLET', 'MAX_MINT_PER_WALLET', 'maxPerAddress', 'MAX_PER_ADDRESS', 'maxMintsPerWallet', 'walletLimit', 'mintLimit', 'perWalletLimit', 'maxPerUser', 'maxPerAccount', 'maxMintPerAddress', 'MAX_MINT_PER_ADDRESS', 'maxMintAmountPerWallet', 'maxPerAgent', 'MAX_PER_AGENT', 'maxUnitsPerWallet', 'MAX_UNITS_PER_WALLET', 'maxMintPerAgent', 'quotaPerAgent', 'baseQuota', 'BASE_QUOTA', 'maxPerID', 'perAddressLimit', 'MAX_PER_TX', 'maxPerTx', 'maxMintPerTx', 'MAX_MINT_PER_TX', 'maxMintAmountPerTx', 'maxPerTransaction']; /* 使用者 11/1 18:03：「每筆上限」也算有上限（安小將只有每筆 10 份） */
-async function walletLimit(c) { /* 使用者 11/1 17:54：要有「每個錢包最多幾份」規定的項目才打（特別是 NFT）——沒有上限的，項目方或少數人可以無限灌 */
+const TX_LIMIT = new Set(['MAX_PER_TX', 'maxPerTx', 'maxMintPerTx', 'MAX_MINT_PER_TX', 'maxMintAmountPerTx', 'maxPerTransaction']);
+async function walletLimit(c, strict = false) { /* 使用者 11/1 17:54：要有「每個錢包最多幾份」規定的項目才打（特別是 NFT）——沒有上限的，項目方或少數人可以無限灌 */
   if (S.wlimV !== 2) { S.wlimV = 2; S.wlim = {}; for (const P of Object.values(S.paid || {})) { delete P.wlim; delete P.noLimLog; } } /* 規則放寬後重新判斷 */
-  S.wlim = S.wlim || {}; if (S.wlim[c] != null) return S.wlim[c];
+  S.wlim = S.wlim || {}; const ck = strict ? c + ':w' : c; if (S.wlim[ck] != null) return S.wlim[ck];
   let lim = 0; try { let code = ((await rpc('eth_getCode', [c, 'latest']).catch(() => '')) || '').toLowerCase(); code = await fullCode(c, code).catch(() => code);
-    for (const nm of LIMIT_NAMES) { const sel = keccakHex(Buffer.from(nm + '()').toString('hex')).slice(0, 8); if (!code.includes(sel)) continue; const r = await call(c, '0x' + sel); if (r && r.length >= 66) { const x = Number(BigInt(r.slice(0, 66))); if (x >= 1 && x <= 10000) { lim = x; break; } } } } catch {}
-  S.wlim[c] = lim; return lim;
+    for (const nm of LIMIT_NAMES) { if (strict && TX_LIMIT.has(nm)) continue; const sel = keccakHex(Buffer.from(nm + '()').toString('hex')).slice(0, 8); if (!code.includes(sel)) continue; const r = await call(c, '0x' + sel); if (r && r.length >= 66) { const x = Number(BigInt(r.slice(0, 66))); if (x >= 1 && x <= 10000) { lim = x; break; } } } } catch {}
+  S.wlim[ck] = lim; return lim;
+}
+// ---------- NFT 要很嚴格（使用者 11/1 18:36）：進度 70%、150 個錢包、一定要有「每個錢包上限」、預算 10U、圖片資料要真的打得開、不能重複用別人的圖 ----------
+async function isNft(c) { S.isNft = S.isNft || {}; if (S.isNft[c] != null) return !!S.isNft[c]; let code = ((await rpc('eth_getCode', [c, 'latest']).catch(() => '')) || '').toLowerCase(); code = await fullCode(c, code).catch(() => code); const v = code.includes('c87b56dd') || code.includes('0e89341c') ? 1 : 0; S.isNft[c] = v; return !!v; }
+const gw = (u) => String(u || '').trim().replace(/^ipfs:\/\/(ipfs\/)?/i, 'https://ipfs.io/ipfs/').replace(/^ar:\/\//i, 'https://arweave.net/');
+async function nftStrict(c) {
+  S.nftOk = S.nftOk || {}; const k = S.nftOk[c]; if (k && (k.r === '' || Date.now() - k.t < 1800e3)) return k.r;
+  let r = '';
+  try {
+    const str = (x) => { try { const b = Buffer.from(x.slice(2), 'hex'); const n = Number(BigInt('0x' + b.slice(32, 64).toString('hex'))); return b.slice(64, 64 + n).toString('utf8').trim(); } catch { return ''; } };
+    let uri = ''; for (const [sel, id] of [['c87b56dd', 1n], ['c87b56dd', 0n], ['0e89341c', 1n], ['0e89341c', 0n]]) { const x = await call(c, '0x' + sel + w(id)); if (x && x.length > 130) { uri = str(x); if (uri) break; } }
+    if (!uri) r = 'NFT 讀不到圖片資料';
+    else {
+      let meta = null;
+      if (/^data:application\/json;base64,/i.test(uri)) { try { meta = JSON.parse(Buffer.from(uri.split(',')[1], 'base64').toString('utf8')); } catch {} }
+      else if (/^data:application\/json/i.test(uri)) { try { meta = JSON.parse(decodeURIComponent(uri.slice(uri.indexOf(',') + 1))); } catch {} }
+      else { try { const rs = await fetch(gw(uri), { headers: { 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) }); if (rs.ok) meta = JSON.parse((await rs.text()).slice(0, 2e5)); } catch {} }
+      const img = meta && (meta.image || meta.image_url || meta.animation_url);
+      if (!img) r = 'NFT 圖片資料打不開或裡面沒有圖片';
+      else {
+        let hash = '';
+        if (/^data:image\//i.test(img)) hash = createHash('sha256').update(String(img)).digest('hex');
+        else { try { const ri = await fetch(gw(img), { headers: { 'user-agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(20000) }); if (ri.ok) { const buf = Buffer.from(await ri.arrayBuffer()); if (buf.length > 200) hash = createHash('sha256').update(buf.subarray(0, 512e3)).digest('hex'); } } catch {} }
+        if (!hash) r = 'NFT 圖片打不開';
+        else { /* 有人會用同一張圖重複開盤 → 同一張圖（內容一樣）出現在別的合約就不打 */
+          S.nftImg = S.nftImg || {}; const urlKey = 'u:' + gw(img).toLowerCase(); const first = S.nftImg[hash] || S.nftImg[urlKey];
+          if (first && first !== c) r = `NFT 圖片跟另一個合約 ${first.slice(0, 10)}… 一模一樣，疑似重複用同一張圖開盤`;
+          else { S.nftImg[hash] = c; S.nftImg[urlKey] = c; const ks = Object.keys(S.nftImg); if (ks.length > 20000) for (const kk of ks.slice(0, 2000)) delete S.nftImg[kk]; }
+        }
+      }
+    }
+  } catch { r = 'NFT 圖片檢查失敗'; }
+  S.nftOk[c] = { t: Date.now(), r }; return r;
 }
 async function freeNotify(c, name, prog, agents) { /* 使用者 11/1 15:56：免費項目大多不會真的發射、還是壞人掏錢的入口 → 不自動打，達到條件只通知，使用者要打再手動 */
   S.freeNote = S.freeNote || {}; if (S.freeNote[c]) return; S.freeNote[c] = ts(); const ks = Object.keys(S.freeNote); if (ks.length > 3000) delete S.freeNote[ks[0]];
@@ -1197,6 +1231,7 @@ async function paidLoop(mode = 'all', shard = null) {
   if (S.umReset !== 3) { S.umReset = 3; for (const P of Object.values(S.paid || {})) { if (P.unmintable) { delete P.unmintable; P.fail = 0; P.cf = 0; if (P.replay?.learned) delete P.replay; } } } // 新版一次性：之前標記打不了的重新試
   S.paid = S.paid || {}; S.dyn = S.dyn || []; S.paidSpend = S.paidSpend || {};
   if (S.missed && !S.missedClean1) { S.missedClean1 = 1; for (const [k, m] of Object.entries(S.missed)) if (String(m.why || '').includes('保本')) delete S.missed[k]; } /* 照規則不打的不算錯過 */
+  if (S.progFixV !== 1) { S.progFixV = 1; for (const P of Object.values(S.paid || {})) if ((P.progress || 0) >= 0.999 && !P.progAt) { delete P.progress; delete P.swLog; } } /* 除錯 11/1（牛來）：舊的進度算法把它讀成 100%，被當成賣完、不再回頭看；進度算法修正後重新讀一次 */
   if (S.agentsV !== 2) { S.agentsV = 2; for (const P of Object.values(S.paid || {})) { delete P.agents; delete P.heatAt; } } /* 逆向防護 11/1：參與人數改成只算送出交易的錢包，舊的（可能被空投灌過的）數字清掉重算 */
   if (S.refundReset !== 1) { S.refundReset = 1; for (const P of Object.values(S.paid)) { delete P.refundOk; delete P.noRefundLog; } } /* 除錯 11/1：代理合約解析修正後，重新判斷一次有沒有退款機制 */
   const today = new Date().toDateString(); if (S.paidSpend.day !== today) S.paidSpend = { day: today };
@@ -1265,6 +1300,7 @@ async function paidLoop(mode = 'all', shard = null) {
       const paying = !(kind === 'replay' && !(BigInt(P.replay?.value || '0') > 0n) && !P.replay?.payTok);
       if (!forced && !paying) { await freeNotify(c, P.name, progress > 0 ? progress : null, P.agents).catch(() => {}); for (const W of WALLETS) P.done[W.name] = P.done[W.name] || 'free-notify'; continue; } /* 使用者 11/1 15:56：免費的只通知不自動打 */
       /* 使用者 11/1 17:54：保本（退款）不再是必要條件——最重要的是 100 個以上不同 Agent ID 錢包在打、進度過門檻；改成要有每個錢包上限 */
+      if (!forced && paying && await isNft(c).catch(() => false)) { /* 使用者 11/1 18:36：NFT 要很嚴格 */ let why = ''; if (!(progress >= Math.max(GO_PCT, 0.7))) why = `NFT 進度要 70% 以上（現在 ${Math.round((progress || 0) * 100)}%）`; else if (!((P.agents || 0) >= Math.max(AG_MIN, 150))) why = `NFT 要 150 個以上 Agent ID 錢包在打（現在 ${P.agents || 0} 個）`; else if (!(await walletLimit(c, true))) why = 'NFT 一定要有「每個錢包上限」（只有每筆上限不算）'; else why = await nftStrict(c); if (why) { if (P.nftWhy !== why) { P.nftWhy = why; P.lastReason = why; log(`跳過 ${P.name || c}：${why}`); } continue; } P.isNftBuy = 1; }
       if (!forced && paying) { if (P.wlim == null) P.wlim = await walletLimit(c); if (!P.wlim) { if (!P.noLimLog) { P.noLimLog = 1; P.lastReason = '沒有每個錢包上限的規定，照規則不打'; log(`跳過 ${P.name || c}：合約沒有「每個錢包最多幾份」的規定，照規則不打`); } continue; } }
 
     }
@@ -1299,7 +1335,7 @@ async function paidLoop(mode = 'all', shard = null) {
     await Promise.all(WALLETS.map(async (W) => { 
       if (P.done[W.name]) return;
       if (!forced) { const rb = await riskBlock(W, c, 0n, '0x', false, true).catch(() => ''); if (rb) { if (P.riskLog !== rb) { P.riskLog = rb; log(`[${W.name}] 風控暫停 ${P.name || c}：${rb}`); } return; } }
-      const budU = forced ? PAID.maxUsd : Math.min(PAID.maxUsd, PAID.dayUsd - paidDayUsd(W)); if (budU < 1) { if (P.dayCapLog !== new Date().toDateString()) { P.dayCapLog = new Date().toDateString(); log(`[${W.name}] 今天付費已達 ${PAID.dayUsd}U 上限，${P.name || c} 不打`); } return; } /* 使用者 11/1 17:38：每日總上限 */
+      const budU = forced ? PAID.maxUsd : Math.min(P.isNftBuy ? 10 : PAID.maxUsd, PAID.dayUsd - paidDayUsd(W)); /* NFT 預算 10U */ if (budU < 1) { if (P.dayCapLog !== new Date().toDateString()) { P.dayCapLog = new Date().toDateString(); log(`[${W.name}] 今天付費已達 ${PAID.dayUsd}U 上限，${P.name || c} 不打`); } return; } /* 使用者 11/1 17:38：每日總上限 */
       try {
         price = price || (await bnbUsd());
         const spent = S.paidSpend[W.name] || 0;
@@ -1561,7 +1597,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.7.2', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.7.3', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
