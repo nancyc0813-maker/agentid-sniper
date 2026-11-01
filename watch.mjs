@@ -977,8 +977,9 @@ async function drainCheck(c, valueWei, data = '') { /* 使用者 11/1 15:59：�
   S.drainC = S.drainC || {}; const k = S.drainC[c]; if (k && Date.now() - k.t < 60e3) return k.r; /* 網友 AI 建議 11/1：快取從 10 分鐘縮到 1 分鐘，打之前等於重查 */
   let tok = ''; const tr = await call(c, '0xfc0c546a'); if (tr && tr.length >= 66 && BigInt(tr.slice(0, 66)) > 0n) tok = '0x' + tr.slice(26, 66);
   let bal = 0; for (const a of [c, tok].filter(Boolean)) bal += Number(BigInt((await rpc('eth_getBalance', [a, 'latest']).catch(() => '0x0')) || '0x0')) / 1e18;
+  if (bal < 0.01) { /* v2.7.8：有的合约收到 BNB 会换成 USDT／WBNB 存着，不是被转走；只多算这两种公认的币（假不了），门槛一样 0.01 BNB，其他安全规矩不动 */ const px = await bnbUsd().catch(() => 0) || S.lastBnbUsd || 0; for (const a of [c, tok].filter(Boolean)) { const wb = await call(WBNB, '0x70a08231' + wa(a)).catch(() => null); if (wb && wb.length >= 66) bal += Number(BigInt(wb.slice(0, 66))) / 1e18; const us = await call(USDT, '0x70a08231' + wa(a)).catch(() => null); if (us && us.length >= 66 && px > 50) bal += Number(BigInt(us.slice(0, 66))) / 1e18 / px; } }
   const pair = await call(FACTORY, '0xe6a43905' + wa(tok || c) + wa(WBNB)).catch(() => null); const hasPool = !!(pair && pair.length >= 66 && BigInt(pair.slice(0, 66)) > 0n);
-  let r = bal < 0.01 && !hasPool ? `合約裡只剩 ${bal.toFixed(4)} BNB，付的錢被轉走了（退款／開池可能是假的）` : '';
+  let r = bal < 0.01 && !hasPool ? `合約裡只剩 ${bal.toFixed(4)} BNB（含換成 USDT／WBNB 的部分），付的錢被轉走了（退款／開池可能是假的）` : '';
   if (false && !r && !hasPool) { /* 使用者 11/1 17:54：保本檢查不要這麼嚴，只保留「錢幾乎被轉光」這條 */ let sold = Number(S.paid?.[c]?._sold || 0); if (sold > 1e7) sold = 0; /* 份數才算，代幣數量（有 18 位小數）不算 */ const a1 = /^0x[0-9a-f]{8}([0-9a-f]{64})/i.exec(data || ''); let units = a1 ? Number(BigInt('0x' + a1[1])) : 1; if (!(units >= 1 && units <= 1000)) units = 1; const unitB = Number(valueWei) / 1e18 / units; const expect = sold * unitB; if (sold > 0 && expect > 0.05 && bal < expect * 0.5) r = `合約裡只有 ${bal.toFixed(3)} BNB，不到已賣出金額（約 ${expect.toFixed(3)} BNB）的一半，錢可能被轉走了`; }
   S.drainC[c] = { t: Date.now(), r }; return r;
 }
@@ -1622,6 +1623,7 @@ async function manualMints() {
       return ok ? `[${W.name}] ✅ 打到 ${ok} 份${err ? '（已達這個項目每個錢包的上限）' : ''}` : `[${W.name}] ❌ 沒打到（${/reverted/.test(err) ? '合約不讓這個錢包打，可能已打過、名額滿或需要資格' : err}）`;
     }));
     log(`手動補打 ${J.name || J.c}：${res.join('；')}`);
+    if (!(J.swapBack || J.approvals || J.revokeAll) && J.c) { /* v2.7.8：手动打成功的钱包记成「已打」，自动流程（含 forceMint）不会再重复打 */ const c1 = String(J.c).toLowerCase(); WALLETS.forEach((W, i) => { if (!String(res[i] || '').includes('✅')) return; S.paid = S.paid || {}; const P1 = S.paid[c1] || (S.paid[c1] = { at: Date.now(), name: J.name || '', done: {} }); P1.done = P1.done || {}; P1.done[W.name] = 'minted'; }); if (FORCE.has(c1) && WALLETS.every((W, i) => String(res[i] || '').includes('✅'))) { S.forceDone = S.forceDone || {}; S.forceDone[c1] = 1; } save(); }
     if (J.swapBack || J.approvals || J.revokeAll) await tgSay(`🛠 ${J.swapBack ? '換回 BNB' : '授權處理'} ${J.name || J.c || ''}\n${res.join('\n')}`);
     else { /* 使用者 11/1 03:42：手動補打不發個人 TG，改發大群（只說打了什麼，不寫金額和錢包） */
       const okAny = res.some((x) => x.includes('✅')); const c0 = String(J.c || '').toLowerCase(); S.grpOnce = S.grpOnce || {};
@@ -1631,7 +1633,7 @@ async function manualMints() {
 }
 // ── TG 指令：使用者直接在機器人打「賣 XXX」「賣 XXX 一半」「餘額」，幾秒內執行，不經過 Claude ──
 // ── 更新提醒（開源版才開；使用者 11/1 00:47：不自動更新，只提醒；用戶回 /update 才更新，更新前安檢＋sha256＋備份，新版起不來自動換回）──
-const UPD = { on: true, ver: '2.7.7', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
+const UPD = { on: true, ver: '2.7.8', repo: 'nancyc0813-maker/agentid-sniper', group: 't.me/nancy_c0813' }; /* 使用者 11/1 00:47：只提醒不自動更新；引導用戶加入使用者的 TG 群 */
 const verGt = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function updCheck(quiet = false) {
   if (!UPD.on) return null;
