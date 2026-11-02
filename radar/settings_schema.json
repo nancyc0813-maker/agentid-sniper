@@ -3,23 +3,23 @@
  "groups": [
   {
    "id": "bsc",
-   "zh": "BSC · AI 铸造项目",
-   "en": "BSC · AI mint projects"
+   "zh": "BNB Chain · AI 铸造项目",
+   "en": "BNB Chain · AI mint projects"
   },
   {
    "id": "tok",
-   "zh": "BSC · AI 热门代币",
-   "en": "BSC · AI hot tokens"
+   "zh": "BNB Chain · AI 热门代币",
+   "en": "BNB Chain · AI hot tokens"
   },
   {
    "id": "bscnft",
-   "zh": "BSC · NFT 铸造",
-   "en": "BSC · NFT mints"
+   "zh": "BNB Chain · NFT 铸造",
+   "en": "BNB Chain · NFT mints"
   },
   {
    "id": "sell",
-   "zh": "BSC · 卖出策略",
-   "en": "BSC · Sell strategy"
+   "zh": "BNB Chain · 卖出策略",
+   "en": "BNB Chain · Sell strategy"
   },
   {
    "id": "rh",
@@ -47,8 +47,8 @@
    "max": 1,
    "zh": "自动铸造",
    "en": "Auto-mint",
-   "dzh": "关掉 = BSC AI 铸造项目只通知不打",
-   "den": "Off = BSC AI mint projects are alerts only"
+   "dzh": "关掉 = BNB Chain AI 铸造项目只通知不打",
+   "den": "Off = BNB Chain AI mint projects are alerts only"
   },
   {
    "k": "bsc.mintUsd",
@@ -100,6 +100,42 @@
    "den": "Agent ID (KYC) wallets minting before we join"
   },
   {
+   "k": "bsc.drainSkip",
+   "g": "bsc",
+   "type": "bool",
+   "def": 1,
+   "min": 0,
+   "max": 1,
+   "zh": "钱被转走的付费项目不打",
+   "en": "Skip paid mints whose funds were moved out",
+   "dzh": "建议开着。关掉的话，付的钱可能被项目方转走、拿不回来",
+   "den": "Recommended ON. If off, the money you pay may be taken by the project and not refundable"
+  },
+  {
+   "k": "bsc.stallSkip",
+   "g": "bsc",
+   "type": "bool",
+   "def": 1,
+   "min": 0,
+   "max": 1,
+   "zh": "免费铸造卡住就停",
+   "en": "Stop on stalled free mints",
+   "dzh": "进度 3 小时没动的免费项目，不再补铸、不排队",
+   "den": "Free mints whose progress hasn't moved for 3 hours are no longer minted or queued"
+  },
+  {
+   "k": "bsc.cloneSkip",
+   "g": "bsc",
+   "type": "bool",
+   "def": 1,
+   "min": 0,
+   "max": 1,
+   "zh": "同名重发不打",
+   "en": "Skip same-name re-launches",
+   "dzh": "同一个名字 24 小时内第 2 个合约起不铸（常见钓自动铸造的手法）",
+   "den": "From the 2nd contract with the same name within 24h, don't mint (a common trick to bait auto-minters)"
+  },
+  {
    "k": "bsc.tokAuto",
    "g": "tok",
    "type": "bool",
@@ -108,8 +144,8 @@
    "max": 1,
    "zh": "自动买",
    "en": "Auto-buy",
-   "dzh": "关掉 = BSC AI 热门代币只通知不买",
-   "den": "Off = BSC AI hot tokens are alerts only"
+   "dzh": "关掉 = BNB Chain AI 热门代币只通知不买",
+   "den": "Off = BNB Chain AI hot tokens are alerts only"
   },
   {
    "k": "bsc.tokUsd",
@@ -454,8 +490,8 @@
    "uen": "x",
    "zh": "几倍卖回本",
    "en": "Take cost back at",
-   "dzh": "Robinhood 自己的卖出规则（跟 BSC 分开设）：涨到这个倍数先卖回本钱",
-   "den": "Same as BSC"
+   "dzh": "Robinhood 自己的卖出规则（跟 BNB Chain 分开设）：涨到这个倍数先卖回本钱",
+   "den": "Same as BNB Chain"
   },
   {
    "k": "rh.crash",
@@ -467,7 +503,7 @@
    "zh": "回本前回落全卖",
    "en": "Stop (before cost back)",
    "dzh": "还没回本时，从最高点跌这么多就全卖",
-   "den": "Same as BSC"
+   "den": "Same as BNB Chain"
   },
   {
    "k": "rh.crashAfterBack",
@@ -479,7 +515,7 @@
    "zh": "回本后回落全卖",
    "en": "Stop (after cost back)",
    "dzh": "回本后，从最高点跌这么多就全卖",
-   "den": "Same as BSC"
+   "den": "Same as BNB Chain"
   },
   {
    "k": "rh.mintAuto",
@@ -588,7 +624,7 @@
    "unit": "U",
    "zh": "每天最多",
    "en": "Daily cap",
-   "dzh": "每个钱包每天花在 BSC NFT 铸造的上限",
+   "dzh": "每个钱包每天花在 BNB Chain NFT 铸造的上限",
    "den": "Per wallet per day"
   },
   {

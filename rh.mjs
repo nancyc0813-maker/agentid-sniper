@@ -23,7 +23,7 @@ export function startRH(ctx) {
   const { WALLETS, log, tg, S, save, radarOff } = ctx;
   S.rh = S.rh || {}; S.rh.pos = S.rh.pos || {}; S.rh.seen = S.rh.seen || {}; S.rh.black = S.rh.black || {}; S.rh.day = S.rh.day || {};
   const R = S.rh; let ri = 0;
-  async function rpc(method, params) { let last; for (let i = 0; i < RPCS.length; i++) { const u = RPCS[(ri + i) % RPCS.length]; try { const rs = await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(20000) }); if (rs.status === 429) throw new Error('Too Many Requests'); const j = await rs.json(); if (j.error) throw new Error(j.error.message); return j.result; } catch (e) { last = e; ri++; if (/Too Many|rate/i.test(e.message)) await sleep(800); } } throw last; }
+  async function rpc(method, params) { let last; const LG = method === 'eth_getLogs'; /* 11/2 自查：drpc 免费版和 thirdweb 查不了转账纪录 → 只用官方节点，多试几次 */ for (let i = 0; i < (LG ? 4 : RPCS.length); i++) { const u = LG ? RPCS[0] : RPCS[(ri + i) % RPCS.length]; if (LG && i) await sleep(1500); try { const rs = await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(20000) }); if (rs.status === 429) throw new Error('Too Many Requests'); const j = await rs.json(); if (j.error) throw new Error(j.error.message); return j.result; } catch (e) { last = e; ri++; if (/Too Many|rate/i.test(e.message)) await sleep(800); } } throw last; }
   async function batch(calls) { const out = []; for (let i = 0; i < calls.length; i += 20) { const part = calls.slice(i, i + 20); let ok = false; for (let k = 0; k < RPCS.length && !ok; k++) { try { const j = await (await fetch(RPCS[(ri + k) % RPCS.length], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(part.map(([m, p], n) => ({ jsonrpc: '2.0', id: n, method: m, params: p }))), signal: AbortSignal.timeout(20000) })).json(); const by = new Map((Array.isArray(j) ? j : []).map((x) => [x.id, x.result])); part.forEach((_, n) => out.push(by.get(n) ?? null)); ok = Array.isArray(j); if (!ok) throw 0; } catch { await sleep(600); } } if (!ok) part.forEach(() => out.push(null)); await sleep(300); } return out; }
   const call = (to, data) => rpc('eth_call', [{ to, data }, 'latest']).catch(() => null);
   const big = (h) => (h && h !== '0x' ? BigInt(h.slice(0, 66)) : 0n);
@@ -62,7 +62,7 @@ export function startRH(ctx) {
   async function analyze(c, poolHint, manual, opt = {}) {
     const head = opt.toBlock || parseInt(await rpc('eth_blockNumber', []), 16); const TB = '0x' + head.toString(16);
     let from = Math.max(0, head - Math.ceil(bps * 3600 * 6)); let logs = [];
-    for (let tries = 0; tries < 3; tries++) { logs = await rpc('eth_getLogs', [{ fromBlock: '0x' + from.toString(16), toBlock: TB, address: c, topics: [TRANSFER] }]); if (logs.some((l) => lc('0x' + l.topics[1].slice(26)) === ZERO) || from === 0) break; from = Math.max(0, from - Math.ceil(bps * 3600 * 24)); }
+    for (let tries = 0; tries < 3; tries++) { try { logs = await rpc('eth_getLogs', [{ fromBlock: '0x' + from.toString(16), toBlock: TB, address: c, topics: [TRANSFER] }]); } catch (e) { if (!/ranges over|block range|too many|response size/i.test(e.message)) throw e; logs = []; for (let a = from; a <= head; a += 9000) { const lg = await rpc('eth_getLogs', [{ fromBlock: '0x' + a.toString(16), toBlock: '0x' + Math.min(head, a + 8999).toString(16), address: c, topics: [TRANSFER] }]); logs.push(...lg); if (logs.length > 20000) break; } } /* 11/2 自查：免费节点一次只给查 1 万个区块 → 自动切段 */ if (logs.some((l) => lc('0x' + l.topics[1].slice(26)) === ZERO) || from === 0) break; from = Math.max(0, from - Math.ceil(bps * 3600 * 24)); }
     if (!logs.length) return { ok: false, why: '查不到转账纪录' };
     const tf = logs.map((l) => ({ from: lc('0x' + l.topics[1].slice(26)), to: lc('0x' + l.topics[2].slice(26)), v: big(l.data), b: parseInt(l.blockNumber, 16), tx: l.transactionHash }));
     let supply = 0n; const bal = new Map(); const add = (a, v) => bal.set(a, (bal.get(a) || 0n) + v);
@@ -126,7 +126,7 @@ export function startRH(ctx) {
     return { ok: true, why: '全部检查通过', facts };
   }
 
-  async function ethBal(a) { return Number(big(await rpc('eth_getBalance', [a, 'latest']).catch(() => '0x0'))) / 1e18; }
+  async function ethBal(a) { for (let i = 0; i < 3; i++) { const h = await rpc('eth_getBalance', [a, 'latest']).catch(() => null); if (h && /^0x[0-9a-f]+$/i.test(h)) return Number(BigInt(h)) / 1e18; } return null; } /* 她 11/2 05:01：节点没回应不能当成 0（误报 ETH 不够） */
   async function tokBal(c, a) { return big(await call(c, '0x70a08231' + wa(a))); }
 
   async function buy(c, sym, facts, manual, usdIn) { const USD = Number(usdIn) > 0 ? Number(usdIn) : RHC.usd;
@@ -134,7 +134,7 @@ export function startRH(ctx) {
     const res = [];
     for (const W of WALLETS) {
       if (!manual && spent(W.addr) + USD > RHC.dayUsd) { res.push(`[${W.name}] 今天额度用完`); continue; }
-      const q = USD / px; const eb = await ethBal(W.addr); if (eb < q + 0.0003) { res.push(`[${W.name}] Robinhood 上的 ETH 不够（有 ${eb.toFixed(5)}，要 ${(q + 0.0003).toFixed(5)}）`); continue; }
+      const q = USD / px; const eb = await ethBal(W.addr); if (eb != null && eb < q + 0.0003) { res.push(`[${W.name}] Robinhood 上的 ETH 不够（有 ${eb.toFixed(5)}，要 ${(q + 0.0003).toFixed(5)}）`); continue; }
       const b0 = await tokBal(c, W.addr);
       const sw = await W.baw(['market-order', 'swap', '--binanceChainId', '4663', '--fromTokenQty', q.toFixed(6), '--fromToken', NATIVE, '--toToken', c, '--slippage', '15']);
       log(`[Robinhood][${W.name}] 买 ${sym}：${sw.t.slice(0, 300)}`);
@@ -154,7 +154,7 @@ export function startRH(ctx) {
     const r = await W.baw(['market-order', 'swap', '--binanceChainId', '4663', '--fromTokenQty', qty, '--fromToken', c, '--toToken', NATIVE, '--slippage', '20']);
     log(`[Robinhood][${W.name}] 卖 ${P.sym} ${pct}%（${why}）：${r.t.slice(0, 300)}`);
     const ok = !!r.j?.success; R.trades = R.trades || []; R.trades.push({ sym: P.sym, c, w: W.addr, pct, why, ok, at: Date.now() }); if (R.trades.length > 2000) R.trades.splice(0, R.trades.length - 2000);
-    await tg(`💰 [Robinhood][${W.name}] ${P.sym} ${ok ? '已卖' : '想卖但失败'} ${pct}%（${why}）\n${c}`).catch(() => {}); return ok;
+    const em = ok ? '' : String(r.j?.error?.message || r.t || '').slice(0, 200); W._lastErr = em; await tg(`💰 [Robinhood][${W.name}] ${P.sym} ${ok ? '已卖' : '想卖但失败'} ${pct}%（${why}）${ok ? '' : '\n原因：' + (globalThis.sellWhy ? globalThis.sellWhy(em) : em.slice(0, 100))}\n${c}`).catch(() => {}); return ok;
   }
 
   // ── 持仓监控：每 15 秒 ──
@@ -244,7 +244,7 @@ export function startRH(ctx) {
     for (const W of WALLETS) { if (M.done[W.addr]) continue;
       const dd = day(); const sp = (R.mintDay[dd] || {})[W.addr] || 0; if (!manual && sp + (M.costUsd || 0) > RHC.mintDayUsd) { out.push(`[${W.name}] 今天铸造额度用完`); continue; }
       const data = String(M.tpl.data).toLowerCase().split(M.tpl.from.slice(2)).join(W.addr.slice(2)); // 范本里如果写了对方的地址，换成我们自己的
-      const val = BigInt(M.tpl.value); if (await ethBal(W.addr) < Number(val) / 1e18 + 0.0003) { out.push(`[${W.name}] Robinhood 上的 ETH 不够`); continue; }
+      const val = BigInt(M.tpl.value); if (((x) => x != null && x < Number(val) / 1e18 + 0.0003)(await ethBal(W.addr))) { out.push(`[${W.name}] Robinhood 上的 ETH 不够`); continue; }
       const p = await W.baw(['contract-call', 'preview', '--binanceChainId', '4663', '--from', W.addr, '--to', M.tpl.to, '--value', val.toString(), '--inputData', data]);
       const sim = p.j?.data?.simulationResult, rid = p.j?.data?.requestId; if (!p.j?.success || !rid) { out.push(`[${W.name}] 预演失败：${String(p.j?.error?.message || p.t).slice(0, 80)}`); continue; }
       const got = (sim?.balanceChanges || []).some((b) => lc(b.owner) === W.addr && lc(b.contractAddress) === c && Number(b.change) > 0) || (sim?.nftChanges || sim?.erc721Changes || []).length > 0;
@@ -272,6 +272,6 @@ export function startRH(ctx) {
   const t1 = setInterval(() => { scan(); }, 90e3); const t2 = setInterval(() => { monitor(); }, 15e3); t1.unref?.(); t2.unref?.(); setTimeout(scan, 15e3);
   log('[Robinhood] 自动打启动');
   async function manualBuy(c, usd) { c = lc(c); const r = await analyze(c, null, true).catch((e) => ({ ok: false, why: e.message })); if (!r.ok) return '❌ 挡下了：' + r.why; const I = (await dsInfo([c])).get(c); r.facts.liq0 = I?.liq || 0; return await buy(c, I?.sym || c.slice(0, 8), r.facts, true, usd); }
-  async function manualSell(c, pct = 100, only = '') { c = lc(c); pct = Math.min(100, Math.max(1, Number(pct) || 100)); const P = R.pos[c]; if (!P) return '没有这个 Robinhood 持仓'; const out = []; for (const W of WALLETS) { if (only && lc(only) !== W.addr) continue; const w = P.w[W.addr]; if (!w || w.closed) continue; const ok = await sellPct(c, P, W, pct, `你在雷达按了卖 ${pct}%`); if (ok && pct >= 100) w.closed = 1; out.push(`[${W.name}] ${ok ? '✅ 已卖' : '❌ 没卖成'}`); } if (Object.values(P.w).every((w) => w.closed)) { R.done = R.done || {}; R.done[c] = { ...P, endAt: Date.now() }; delete R.pos[c]; } save(); return out.join('\n') || '没有可卖的'; }
+  async function manualSell(c, pct = 100, only = '') { c = lc(c); pct = Math.min(100, Math.max(1, Number(pct) || 100)); const P = R.pos[c]; if (!P) return '没有这个 Robinhood 持仓'; const out = []; for (const W of WALLETS) { if (only && lc(only) !== W.addr) continue; const w = P.w[W.addr]; if (!w || w.closed) continue; const ok = await sellPct(c, P, W, pct, `你在雷达按了卖 ${pct}%`); if (ok && pct >= 100) w.closed = 1; out.push(`[${W.name}] ${ok ? '✅ 已卖' : '❌ 没卖成：' + (globalThis.sellWhy ? globalThis.sellWhy(W._lastErr) : (W._lastErr || '没有拿到原因'))}`); } if (Object.values(P.w).every((w) => w.closed)) { R.done = R.done || {}; R.done[c] = { ...P, endAt: Date.now() }; delete R.pos[c]; } save(); return out.join('\n') || '没有可卖的'; }
   return { manualBuy, manualSell, manualMint, previewMint, analyze, RHC, apply, ethBal, ethUsd };
 }

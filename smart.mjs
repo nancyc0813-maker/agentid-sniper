@@ -7,7 +7,7 @@ const lc = (x) => String(x || '').toLowerCase(); const pad = (a) => '0x' + lc(a)
 export function startSmart({ rpc, log, tg, S, save, radarSet }) {
   const RH = 'https://rpc.mainnet.chain.robinhood.com';
   const rhRpc = async (m, p) => { const j = await (await fetch(RH, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: m, params: p }), signal: AbortSignal.timeout(20000) })).json(); if (j.error) throw new Error(j.error.message); return j.result; };
-  const CH = { bsc: { rpc, step: 1200, name: 'BSC' }, robinhood: { rpc: rhRpc, step: 6000, name: 'Robinhood' } };
+  const CH = { bsc: { rpc, step: 1200, name: 'BNB Chain' }, robinhood: { rpc: rhRpc, step: 6000, name: 'Robinhood' } };
   S.smartW = S.smartW || {}; const Z = S.smartW; Z.last = Z.last || {}; Z.related = Z.related || {}; Z.seen = Z.seen || {}; Z.events = Z.events || []; /* 用自己的栏位，不跟旧资料打架 */
   const list = () => { const o = {}; for (const x of Array.isArray(radarSet()['smart.wallets']) ? radarSet()['smart.wallets'] : []) { const a = lc(x?.addr); if (/^0x[0-9a-f]{40}$/.test(a)) o[a] = String(x.label || '聪明钱包').slice(0, 30); } if (radarSet()['smart.related'] !== 0) for (const [a, r] of Object.entries(Z.related)) if (!o[a] && o[r.of]) o[a] = (o[r.of] || '') + ' 的相关钱包'; return o; };
   const symCache = {};
@@ -29,18 +29,20 @@ export function startSmart({ rpc, log, tg, S, save, radarSet }) {
           if (dir === '卖' && FUND.has(tok) && !L[other] && other !== '0x' + '0'.repeat(40)) { // 聪明钱包把钱转给别人 → 可能是它的小号
             const code = await C.rpc('eth_getCode', [other, 'latest']).catch(() => '0x'); if (code === '0x' && !Z.related[other] && Object.keys(Z.related).length < 100) { Z.related[other] = { of: Z.related[who]?.of || who, at: Date.now(), ch }; log(`[聪明钱包] 找到相关钱包 ${other}（${L[who]} 转钱给它）`); } }
           if (SKIP.has(tok)) continue;
-          const k = ch + '|' + tok + '|' + dir; (acts[k] = acts[k] || { ch, tok, dir, who: new Set(), n: 0 }).who.add(who); acts[k].n++;
+          const k = ch + '|' + tok + '|' + dir; (acts[k] = acts[k] || { ch, tok, dir, who: new Set(), n: 0, tx: l.transactionHash, blk: l.blockNumber, by: who }).who.add(who); acts[k].n++;
         }
         for (const A of Object.values(acts)) {
           const key = A.ch + A.tok + A.dir; const prev = Z.seen[key]; if (prev && Date.now() - prev < 30 * 60e3) continue; Z.seen[key] = Date.now(); /* 同一个币同方向 30 分钟只通知一次 */
+          /* 她 11/2 06:56：要知道延迟多久；「买」只算钱包自己送出的交易（别人空投、硬塞进来的垃圾币不算） */
+          let ago = ''; try { const tx = A.tx ? await C.rpc('eth_getTransactionByHash', [A.tx]) : null; const fromW = String(tx?.from || '').toLowerCase(); if (A.dir === '买' && tx && !A.who.has(fromW) && !Object.keys(L).includes(fromW)) { log(`[聪明钱包] ${A.tok} 是别人转进来的（不是它自己买），不通知`); continue; } const b = A.blk ? await C.rpc('eth_getBlockByNumber', [A.blk, false]) : null; const sec = b ? Math.max(0, Math.round(Date.now() / 1000 - parseInt(b.timestamp, 16))) : null; if (sec != null) ago = sec < 90 ? `｜链上 ${sec} 秒前` : `｜链上 ${Math.round(sec / 60)} 分钟前`; } catch {}
           const sym = await symOf(A.ch, A.tok); const names = [...A.who].map((a) => L[a]).slice(0, 3).join('、');
           const ev = { at: Date.now(), ch: A.ch, tok: A.tok, sym, dir: A.dir, who: [...A.who], names }; Z.events.push(ev); if (Z.events.length > 300) Z.events.splice(0, Z.events.length - 300);
-          await tg(`🦋 聪明钱包${A.dir === '买' ? '在买' : '在卖'}：${sym}（${CH[A.ch].name}）\n${names}${A.who.size > 1 ? ` 等 ${A.who.size} 个钱包` : ''}｜${A.n} 笔\n${A.tok}`).catch(() => {});
+          await tg(`🦋 聪明钱包${A.dir === '买' ? '在买' : '在卖'}：${sym}（${CH[A.ch].name}）\n${names}${A.who.size > 1 ? ` 等 ${A.who.size} 个钱包` : ''}｜${A.n} 笔${ago}\n${A.tok}`).catch(() => {});
         }
       }
       for (const [k, t] of Object.entries(Z.seen)) if (Date.now() - t > 6 * 3600e3) delete Z.seen[k];
       save();
     } catch (e) { log('[聪明钱包] 出错 ' + e.message); } finally { busy = false; }
   }
-  setInterval(tick, 30e3).unref(); setTimeout(tick, 20e3); log('[聪明钱包] 监控启动');
+  setInterval(tick, 20e3).unref(); setTimeout(tick, 20e3); log('[聪明钱包] 监控启动');
 }

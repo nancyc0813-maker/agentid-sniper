@@ -31,10 +31,12 @@ function snapshot() {
     else if (prog >= 60 && ag >= 100) { verdict = 'ok'; note = '符合条件'; }
     return { c, name: P.name || c.slice(0, 8), prog, ag, grp, verdict, note, at: P.at || 0, col: done ? 'done' : prog >= 30 ? 'hot' : 'new' };
   }).filter((x) => x.verdict !== 'no' || x.grp > 0 || x.ag > 20).sort((a, b) => (b.ag + b.prog * 3 + b.grp * 30) - (a.ag + a.prog * 3 + a.grp * 30)).filter((x, i) => i < 90 || x.verdict === 'done');
+  const WL = readJSON(path.join(DATA, 'radar_wallets.json'), { list: [] }).list || [];
   const hold = (S.dyn || []).filter((t) => !t.closed).map((t) => {
-    const keyMe = Object.keys(S.tokens || {}).find((k) => k === t.sym || k.endsWith(':' + t.sym));
+    const wn = (WL.find((w) => String(w.addr).toLowerCase() === String(t.only).toLowerCase()) || {}).name; const keyMe = (wn && S.tokens?.[wn + ':' + t.sym]) ? wn + ':' + t.sym : Object.keys(S.tokens || {}).find((k) => k === t.sym || k.endsWith(':' + t.sym)); /* 先找这个钱包自己的纪录 */
     const st = S.tokens?.[keyMe] || {};
-    const cv = S.curveVal?.[t.addr + ':' + t.only]; return { sym: t.sym, addr: t.addr, cost: t.cost || 0, value: st.last?.v ?? (cv != null ? cv : null), curveOk: cv != null, done: !!st.done, stage: st.stage || 0, wallet: t.only };
+    const dead = st.stage === 9 || !!st.gaveUp; /* 她 11/2：卖了好几次都卖不掉（池子没钱）= 实际价值 0，收进零头区 */
+    const cv = S.curveVal?.[t.addr + ':' + t.only]; return { sym: t.sym, addr: t.addr, cost: t.cost || 0, value: dead ? 0 : (st.last?.v ?? (cv != null ? cv : null)), dead, curveOk: cv != null, done: !!st.done, stage: st.stage || 0, wallet: t.only };
   }).filter((h) => !h.done).slice(-40).reverse();
   for (const [c, P] of Object.entries(S.rh?.pos || {})) { const ws = Object.values(P.w || {}).filter((w) => !w.closed); if (!ws.length) continue; hold.unshift({ sym: P.sym, addr: c, chain: 'rh', cost: ws.reduce((a, w) => a + (w.cost || 0), 0), value: ws.some((w) => w.val != null) ? ws.reduce((a, w) => a + (w.val || 0), 0) : null, stage: Math.min(...ws.map((w) => w.stage || 0)) }); } /* Robinhood 持仓 */
   const hb = readText(path.join(DATA, 'watch_heartbeat.txt'));
@@ -45,7 +47,7 @@ function snapshot() {
   const bscNft = Object.entries(S.bscNft?.m || {}).filter(([, M]) => Object.keys(M.m || {}).length >= 10).map(([c, M]) => ({ c, name: M.name || '', sym: M.sym || '', nft: true, total: Object.keys(M.m || {}).length, recent: M.recent ?? null, real: M.real ?? null, fresh: M.freshPct ?? null, cost: M.costUsd ?? null, ok: !!M.ok, why: M.why || '还没检查', done: !!(M.done && Object.keys(M.done).length), age: Math.round((Date.now() - (M.first || Date.now())) / 60e3) })).sort((a, b) => (b.real || 0) - (a.real || 0) || b.total - a.total).slice(0, 60);
   recHist(board, rhMint, bscNft);
   const lookup = readJSON(path.join(DATA, 'radar_lookup.json'), null); const bal = readJSON(path.join(DATA, 'radar_bal.json'), null); const anal = readJSON(path.join(DATA, 'radar_analyze.json'), null), mhist = readJSON(path.join(DATA, 'radar_minthist.json'), null); const panels = (() => { try { const d = path.join(DATA, 'panels'); return fs.existsSync(d) ? fs.readdirSync(d).filter((f) => f.endsWith('.json')).slice(0, 30).map((f) => readJSON(path.join(d, f), null)).filter(Boolean) : []; } catch { return []; } })();
-  const v = { board, hold, hb, bnbUsd: px, rhMint, bscNft, smart, lookup, bal, panels, anal, mhist, official: officialCheck(), set: readJSON(SET, {}), paused: fs.existsSync(path.join(DATA, 'pause_buy.txt')), wallets: readJSON(path.join(DATA, 'radar_wallets.json'), { list: [] }).list || [], login };
+  const myW = (readJSON(path.join(DATA, 'radar_wallets.json'), { list: [] }).list || [])[0]?.addr || ''; const v = { inv: { ...INV, me: String(myW).toLowerCase(), code: /^0x[0-9a-fA-F]{40}$/.test(myW) ? myW.slice(2, 10).toLowerCase() : '' }, xheat: XH.items, board, hold, hb, bnbUsd: px, rhMint, bscNft, smart, lookup, bal, panels, anal, mhist, official: officialCheck(), set: readJSON(SET, {}), paused: fs.existsSync(path.join(DATA, 'pause_buy.txt')), wallets: readJSON(path.join(DATA, 'radar_wallets.json'), { list: [] }).list || [], login };
   cache = { at: Date.now(), v }; return v;
 }
 
@@ -97,6 +99,28 @@ function recHist(board, rhMint, bscNft) { try { if (!HIST) HIST = readJSON(HISTF
   for (const x of bscNft || []) add('nft:' + x.c, { n: x.total, r: x.real });
   const ks = Object.keys(HIST); if (ks.length > 800) ks.sort((a, b) => (HIST[a].at(-1)?.t || 0) - (HIST[b].at(-1)?.t || 0)).slice(0, ks.length - 800).forEach((k) => delete HIST[k]);
   const tmp = HISTF + '.w'; fs.writeFileSync(tmp, JSON.stringify(HIST)); fs.renameSync(tmp, HISTF); } catch {} }
+/* 她 11/2 04:59：新闻跑马灯，资料来自我们网站 nightshift.fans 的新闻页（同一个来源），雷达里直接播，不跳网页 */
+let NEWS = { at: 0, items: [] };
+/* 她 11/2 05:20：频道到底读不读得到——群组、私人频道、没开预览的，t.me/s/ 会被转走，雷达读不到 */
+const TGCHK = {};
+ipcMain.handle('tgCheck', async (e, name) => { name = String(name || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 40); if (!name) return { ok: false }; const c = TGCHK[name]; if (c && Date.now() - c.at < 10 * 60e3) return c; let r = { ok: false, at: Date.now() }; try { const res = await fetch('https://t.me/s/' + name, { signal: AbortSignal.timeout(12000) }); const html = await res.text(); r.ok = /\/s\//.test(res.url) && /tgme_widget_message_text/.test(html); r.net = true; } catch { r.net = false; } TGCHK[name] = r; return r; });
+/* 她 11/2 08:50：X 热度资料要用的两把金钥，只有个人版（有 .sign 资料夹）能存；只回「有没有」，绝不把金钥传回画面 */
+const XKF = path.join(ROOT, '.sign', 'xdata_keys.json');
+ipcMain.handle('xKeysStatus', () => { if (!fs.existsSync(path.join(ROOT, '.sign'))) return null; const k = readJSON(XKF, {}); return { gh: !!k.gh, gx: !!k.gx }; });
+ipcMain.handle('saveXKeys', (e, gh, gx) => { if (!fs.existsSync(path.join(ROOT, '.sign'))) return { err: 'no' }; const k = readJSON(XKF, {}); gh = String(gh || '').trim(); gx = String(gx || '').trim(); if (gh) { if (!/^github_pat_[A-Za-z0-9_]{20,}$/.test(gh)) return { err: 'gh' }; k.gh = gh; } if (gx) { if (!/^[A-Za-z0-9_\-.]{16,200}$/.test(gx)) return { err: 'gx' }; k.gx = gx; } fs.writeFileSync(XKF, JSON.stringify(k)); return { ok: true, gh: !!k.gh, gx: !!k.gx }; });
+/* 11/2：X 热度资料。个人版直接读本机 data/xheat.json；其他用户每 2 分钟从 GitHub radar-data 读，核对官方签名才用 */
+let XH = { at: 0, items: {} };
+async function xheatLoad() { try { const loc = path.join(DATA, 'xheat.json'); if (fs.existsSync(path.join(ROOT, '.sign')) && fs.existsSync(loc)) { const X = readJSON(loc, {}); XH = { at: Date.now(), items: X.items || {} }; return; }
+  const r = await fetch('https://api.github.com/repos/nancyc0813-maker/radar-data/contents/xheat.json', { headers: { Accept: 'application/vnd.github.raw', 'User-Agent': 'robincat-radar' }, signal: AbortSignal.timeout(15000) }); if (!r.ok) return; const j = await r.json();
+  const crypto = require('crypto'); const pub = crypto.createPublicKey({ key: Buffer.from(OFFICIAL_PUB, 'base64'), format: 'der', type: 'spki' }); if (!j?.data || !j?.sig || !crypto.verify(null, Buffer.from(j.data), pub, Buffer.from(j.sig, 'base64'))) return; const D = JSON.parse(j.data); if (Date.now() - (D.at || 0) > 6 * 3600e3) return; XH = { at: Date.now(), items: D.items || {} }; } catch {} }
+setInterval(xheatLoad, 120e3); setTimeout(xheatLoad, 5e3);
+/* 11/2：邀请排行／热门社群（个人版读本机 data/invites_pub.json，其他人读 GitHub radar-data/invites.json），一样核对官方签名 */
+let INV = { codes: {}, groups: [{ h: 'nancy_c0813', n: 0, top: 1 }] };
+async function invLoad() { try { const crypto = require('crypto'); const pub = crypto.createPublicKey({ key: Buffer.from(OFFICIAL_PUB, 'base64'), format: 'der', type: 'spki' }); let j = null; const loc = path.join(DATA, 'invites_pub.json');
+  if (fs.existsSync(path.join(ROOT, '.sign')) && fs.existsSync(loc)) j = readJSON(loc, null); else { const r = await fetch('https://api.github.com/repos/nancyc0813-maker/radar-data/contents/invites.json', { headers: { Accept: 'application/vnd.github.raw', 'User-Agent': 'robincat-radar' }, signal: AbortSignal.timeout(15000) }); if (r.ok) j = await r.json(); }
+  if (!j?.data || !j?.sig || !crypto.verify(null, Buffer.from(j.data), pub, Buffer.from(j.sig, 'base64'))) return; const D = JSON.parse(j.data); INV = { codes: D.codes || {}, groups: Array.isArray(D.groups) ? D.groups.slice(0, 21) : INV.groups }; } catch {} }
+setInterval(invLoad, 10 * 60e3); setTimeout(invLoad, 8e3);
+ipcMain.handle('news', async () => { if (Date.now() - NEWS.at < 60e3 && NEWS.items.length) return NEWS.items; try { const j = await (await fetch('https://nightshift.fans/api/finance', { signal: AbortSignal.timeout(8000) })).json(); const items = (Array.isArray(j?.items) ? j.items : []).filter((x) => x && typeof x.title === 'string' && /^https:\/\//.test(String(x.link || ''))).slice(0, 150).map((x) => ({ title: String(x.title).slice(0, 200), link: String(x.link), source: String(x.source || '').slice(0, 40), cat: String(x.cat || ''), time: String(x.time || '') })); if (items.length) NEWS = { at: Date.now(), items }; } catch {} return NEWS.items; });
 ipcMain.handle('hist', (e, k) => { if (!HIST) HIST = readJSON(HISTF, {}); return (HIST[String(k)] || []).slice(-600); });
 // 代币详情：DexScreener 行情 + GeckoTerminal K 线 + 貔貅检查；都是公开免费接口，1 分钟缓存
 const TD = new Map();
@@ -144,7 +168,7 @@ ipcMain.handle('approvePlugin', (e, file, hash) => { if (!/^[^\\/]+\.mjs$/.test(
 // 贴上 AI 给的东西（11/2）：网页版 AI 碰不到玩家电脑里的档案 → AI 回一段 ###RADAR-… 文字，玩家贴进雷达，这里负责安全地存档
 ipcMain.handle('importAI', (e, kind, name, body) => { try {
   if (kind === 'plugin') { const f = String(name || '').trim(); if (!/^[\w一-鿿-]{1,40}\.mjs$/.test(f)) return { err: '档名不对（只能用中英文、数字、-、_，结尾 .mjs）' }; const code = String(body || ''); if (code.length > 200000) return { err: '太大了' }; if (!/export\s+const\s+meta/.test(code) || !/export\s+async\s+function\s+tick/.test(code)) return { err: '这不是雷达小工具的格式（缺 meta 或 tick）' };
-    if (['网格.mjs', '定投.mjs', '钱包总览.mjs'].includes(f)) return { err: '这是官方小工具的档名，不能覆盖。请叫 AI 换一个档名' }; const dir = path.join(ROOT, 'plugins'); const fp = path.join(dir, f); const existed = fs.existsSync(fp); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(fp, code);
+    if (['网格.mjs', '定投.mjs', '钱包总览.mjs'].includes(f)) return { err: '这是官方小工具的档名，不能覆盖。请叫 AI 换一个档名' }; const dir = path.join(ROOT, 'plugins'); const fp = path.join(dir, f); const existed = fs.existsSync(fp); fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(fp, code); try { const okf = path.join(DATA, 'plugins_ok.json'); const ok = readJSON(okf, {}); ok[f] = require('crypto').createHash('sha256').update(code).digest('hex'); fs.writeFileSync(okf, JSON.stringify(ok)); } catch {} /* 她 11/2：用户自己按「安装」就等于允许，不用再去别处按 */
     try { const w = path.join(ROOT, 'watch.mjs'); const now = new Date(); fs.utimesSync(w, now, now); } catch {} /* 让引擎重新载入，才看得到新小工具 */
     return { ok: true, file: f, existed }; }
   if (kind === 'rules') { const add = JSON.parse(String(body || '[]')); if (!Array.isArray(add)) return { err: '格式不对' }; const F = ['name', 'liqUsd', 'liqBnb', 'agents', 'progress', 'buyTax', 'sellTax', 'realBuyers', 'bundlePct', 'top10Pct']; const ok = add.filter((r) => r && F.includes(r.field) && ['contains', '<', '>'].includes(r.op) && r.value != null).slice(0, 50).map((r) => ({ chain: ['all', 'bsc', 'robinhood'].includes(r.chain) ? r.chain : 'all', field: r.field, op: r.op, value: r.field === 'name' ? String(r.value).slice(0, 40) : Number(r.value), note: String(r.note || '').slice(0, 40) })).filter((r) => r.field === 'name' || Number.isFinite(r.value));

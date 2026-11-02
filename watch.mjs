@@ -73,7 +73,7 @@ async function toGroup(text) {
   if (!msg || !ca) return;
   { const cl = ca.toLowerCase(); S.grpOnce = S.grpOnce || {}; const gk = (key.startsWith('open:') || key.startsWith('hot:')) ? key : cl; if (S.grpOnce[gk]) return; S.grpOnce[gk] = 1; } /* 同一個合約群裡只播一次（打到／70% 擇一，開盤另外播） */
   const now = Date.now(); if (groupSent.has(key) && now - groupSent.get(key) < 6 * 3600e3) return; groupSent.set(key, now);
-  try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text: '📡 Agent ID 播报\n' + msg, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {}
+  try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text: safeOut('📡 Agent ID 播报\n' + msg, 1), disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {}
 }
 async function freeProgWatch() { // 免費項目也看鑄造進度（已鑄造／總量），過 70% 播報到群
   S.freeTrack = S.freeTrack || {};
@@ -97,12 +97,14 @@ async function groupProgress(c, name, pct) { // 任何項目（免費或付費�
     const sd = await serialDev(c).catch(() => ''); if (sd) { S.g70[c] = 'skip-serial'; log(`群播報略過 ${name || c}：${sd}`); return; }
     const ao = await agentOnly(c).catch(() => ''); if (!ao) { S.g70[c] = 'skip-notagent'; log(`群播報略過 ${name || c}：不是 Agent ID 專屬項目`); return; }
     const P = S.paid?.[c]; if (P) { if (!P.heatAt || Date.now() - P.heatAt > 120e3) await heatOf(c, P).catch(() => {}); }
+    /* 11/2 13:10 有群友被 0x460000… 掏钱：群播报前也要查「付的钱有没有被转走」（跟自己打之前同一条规矩） */
+    if (await othersPay(c).catch(() => 0)) { const dr = await drainCheck(c, 1n).catch(() => ''); if (dr) { S.g70[c] = 'skip-drain'; log(`群播報略過 ${name || c}：${dr}`); return; } }
     const ag = P?.agents || 0; if (ag < AG_MIN) { S.g70[c] = 'skip-agents'; log(`群播報略過 ${name || c}：只有 ${ag} 個 Agent ID 錢包在打（要 ${AG_MIN} 個以上）`); return; }
   }
   S.g70[c] = ts(); S.grpOnce = S.grpOnce || {}; S.grpOnce[c] = 1;
   const text = `📡 Agent ID 播报\n🔥 ${name || '新项目'} 铸造进度已超过 70%（目前 ${Math.round(pct * 100)}%）\n合约：${c}`;
   log('群播報: ' + text.replace(/\n/g, ' | '));
-  try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {}
+  try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text: safeOut(text, 1), disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {}
 }
 async function riskNote(c) { /* 新功能：看合約有沒有「增發／暫停／黑名單／改稅」這類開發者權限，只提醒不擋 */
   try { const code = (await rpc('eth_getCode', [c, 'latest'])) || ''; if (code.length < 10) return '';
@@ -144,7 +146,11 @@ async function lowBnbWatch() { /* 新功能：BNB 快不夠付 gas 時提醒（�
 }
 function pruneState() { /* 審查修正：狀態檔定期瘦身，避免越來越大、越存越慢 */
   const cut = (o, max) => { const k = Object.keys(o || {}); if (k.length > max) for (const x of k.slice(0, k.length - max)) delete o[x]; };
-  cut(S.seenMints, 30000); cut(S.g70, 3000); cut(S.grpOnce, 5000); cut(S.missed, 500); cut(S.deployer, 20000);
+  cut(S.seenMints, 10000); cut(S.g70, 3000); cut(S.grpOnce, 5000); cut(S.missed, 500); cut(S.deployer, 8000); cut(S.depFrom, 8000); cut(S.fps, 1500); cut(S.devs, 1500);
+  /* 11/2 提速：4 天前、没打过的项目纪录清掉（只打新项目，老项目本来就不会再打） */ { const old = Date.now() - 4 * 86400e3; for (const [c, P] of Object.entries(S.paid || {})) if ((P.at || 0) < old && !Object.keys(P.done || {}).length) delete S.paid[c]; }
+  for (const [k, st] of Object.entries(S.tokens || {})) if (st.holders && (st.done || st.stage === 9 || Object.keys(st.holders).length > 3000)) { if (st.done || st.stage === 9) delete st.holders; else cut(st.holders, 3000); }
+  if (S.bscNft?.m) for (const M of Object.values(S.bscNft.m)) if (M.m) cut(M.m, 500);
+  if (S.rh?.mint) for (const M of Object.values(S.rh.mint)) if (M.m) cut(M.m, 500);
   if (S.trades?.length > 1000) S.trades = S.trades.slice(-1000);
   for (const st of Object.values(S.tokens || {})) if (st.holders) cut(st.holders, 20000);
 }
@@ -163,12 +169,29 @@ async function lockNote(c, wAddr) { /* 買到的幣現在能不能轉：模擬�
     catch (e) { return `\n⚠️ 這個幣現在轉不出去（${String(e.message).slice(0, 40)}）：可能要等開發者開放交易，也可能是貔貅`; } }
   return '';
 }
-async function tg(text) { if (/^🛒/u.test(text)) { const m = text.match(/\n(0x[a-fA-F0-9]{40})\n/); if (m) { text += await riskNote(m[1].toLowerCase()); const wn = (text.match(/^🛒 \[([^\]]+)\]/u) || [])[1]; const W = WALLETS.find((x) => x.name === wn); if (W) text += await lockNote(m[1].toLowerCase(), W.addr).catch(() => ''); } } log('TG: ' + text.replace(/\n/g, ' | ')); toGroup(text).catch(() => {}); if (!TG || (!CONFIG.notifyAll && !sendable(text))) return; try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: TG.b, text, disable_web_page_preview: true, disable_notification: !important(text) }), signal: AbortSignal.timeout(10000) }); } catch {} }
+
+/* 她 11/2 05:04：防「GRAM 备注假公告」这类手法——币名、NFT 资料、群里的网址都是任何人都能写的，
+   发 TG 前统一过滤：不在白名单的网址一律拿掉；发大群时连裸网域也拿掉；冒充官方要人转钱的字眼整句拿掉 */
+const SAFE_HOSTS = /(^|\.)(binance\.com|binance\.info|bscscan\.com|github\.com|t\.me|nightshift\.fans|dexscreener\.com|geckoterminal\.com|element\.market|robinhood\.com|blockscout\.com)$/i;
+function safeOut(text, group) {
+  let t = String(text || '').replace(/https?:\/\/([^\s/?#)）]+)[^\s)）]*/gi, (u, h) => (SAFE_HOSTS.test(h) ? u : '[連結已移除]'));
+  if (group) t = t.replace(/\b(?![\w-]*\.ai\b)[\w-]+(?:\.[\w-]+)*\.(?:xyz|com|io|org|net|app|online|fun|site|top|cc|me|link|vip|pro|club|live|info|finance|money|gg)\b(?!\/nancy)/gi, (d) => (SAFE_HOSTS.test(d) ? d : '[網址已移除]'));
+  t = t.split('\n').map((l) => (/(保险箱|保險箱|安全账户|安全帳戶|遭遇黑客|遭到攻擊|被黑客|請將資金|请将资金|转入以下|轉入以下|官方公告.*(转|轉))/.test(l) ? '[可疑內容已移除]' : l)).join('\n');
+  return t.slice(0, 4000);
+}
+async function tg(text) { if (/^🛒/u.test(text)) { const m = text.match(/\n(0x[a-fA-F0-9]{40})\n/); if (m) { text += await riskNote(m[1].toLowerCase()); const wn = (text.match(/^🛒 \[([^\]]+)\]/u) || [])[1]; const W = WALLETS.find((x) => x.name === wn); if (W) text += await lockNote(m[1].toLowerCase(), W.addr).catch(() => ''); } } log('TG: ' + text.replace(/\n/g, ' | ')); toGroup(text).catch(() => {}); if (!TG || (!CONFIG.notifyAll && !sendable(text))) return; try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: TG.b, text: safeOut(text, 0), disable_web_page_preview: true, disable_notification: !important(text) }), signal: AbortSignal.timeout(10000) }); } catch {} }
 
 const RPCS = Array.isArray(CONFIG.rpcs) && CONFIG.rpcs.length ? CONFIG.rpcs : ['https://bsc-dataseed.bnbchain.org', 'https://bsc-rpc.publicnode.com', 'https://bsc.publicnode.com', 'https://bsc.drpc.org', 'https://1rpc.io/bnb', 'https://binance.llamarpc.com']; // 可在 config.json 的 rpcs 换成自己的节点（公共节点常被限流）
 let ri = 0;
+/* 11/2 提速：①合约本身回「执行失败（revert）」是正常答案，以前会把 16 个节点全部试一遍才放弃 → 现在直接回；
+   ②被限流／连不上的节点冷却 60 秒，不再每次都等它 12 秒逾时；③逾时改 8 秒 */
+const RPC_BAD = new Map(); const isRevert = (m) => /revert|invalid opcode|out of gas|execution|VM Exception|invalid jump|stack/i.test(String(m || ''));
 async function rpc(method, params) {
-  let last; for (let i = 0; i < RPCS.length; i++) { const u = RPCS[(ri + i) % RPCS.length]; try { const r = await (await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(12000) })).json(); if (r.error) throw new Error(r.error.message); ri = (ri + i) % RPCS.length; return r.result; } catch (e) { last = e; } }
+  let last; const now = Date.now(); const order = []; for (let i = 0; i < RPCS.length; i++) { const u = RPCS[(ri + i) % RPCS.length]; if ((RPC_BAD.get(u) || 0) <= now) order.push([u, (ri + i) % RPCS.length]); }
+  if (!order.length) for (let i = 0; i < RPCS.length; i++) order.push([RPCS[(ri + i) % RPCS.length], (ri + i) % RPCS.length]);
+  for (const [u, idx] of order) { try { const r = await (await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(8000) })).json();
+      if (r.error) { if (isRevert(r.error.message)) { ri = idx; throw Object.assign(new Error(r.error.message), { revert: true }); } throw new Error(r.error.message); } ri = idx; return r.result; }
+    catch (e) { if (e.revert) throw e; last = e; RPC_BAD.set(u, Date.now() + 60e3); } }
   throw last;
 }
 const w = (n) => BigInt(n).toString(16).padStart(64, '0');
@@ -219,7 +242,11 @@ for (const W of WALLETS) W.agentId = keccak256(W.name.toLowerCase().replace(/\.a
 let S = { tokens: {}, lastBlock: 0, seenMints: {}, lastLoginAlert: 0 };
 try { S = { ...S, ...JSON.parse(readFileSync(STATE, 'utf8')) }; } catch {}
 for (const k of Object.keys(S.tokens)) delete S.tokens[k].verified;
-const save = () => { try { writeFileSync(STATE + '.tmp', JSON.stringify(S)); renameSync(STATE + '.tmp', STATE); } catch {} }; // 審查修正：先寫暫存檔再換名，當機也不會把狀態檔寫壞
+const saveNow = () => { try { writeFileSync(STATE + '.tmp', JSON.stringify(S)); renameSync(STATE + '.tmp', STATE); } catch {} _saveAt = Date.now(); _saveDirty = false; };
+let _saveAt = 0, _saveDirty = false, _saveT = null;
+/* 11/2 提速：状态档很大，以前每个动作都整个重写（一秒好几次），拖慢整个引擎 → 改成最多每 3 秒写一次，结束前一定写完 */
+const save = () => { _saveDirty = true; if (_saveT) return; const wait = Math.max(0, 3000 - (Date.now() - _saveAt)); _saveT = setTimeout(() => { _saveT = null; if (_saveDirty) saveNow(); }, wait); };
+process.on('exit', () => { if (_saveDirty) saveNow(); }); // 審查修正：先寫暫存檔再換名，當機也不會把狀態檔寫壞
 
 // ---------- 持倉 ----------
 const XQ = ['0x4902c5ebc598265ed2212b559b042de8a5eeec3f', '0x02fca66c1d1afb4e2a7884261eb00f63598a7436', '0x205812cdbed920aff76c6580abd681a46d11efc7', '0xbe9d156892e55e7154bcd3cb0fea677f9d3103e1']; /* 使用者 10/31 19:49：币安无忧 的池子是跟 BNCB（Flap 系報價幣）配對，以前只看 BNB/USDT/USD1 漏掉了 */
@@ -753,9 +780,28 @@ async function progressSweep() { /* 使用者 10/31 23:21 查 Pulsepanther 沒�
   let i = 0; await Promise.all(Array.from({ length: 6 }, async () => { while (i < list.length) { const [c, P] = list[i++]; try { if (P.progAt && Date.now() - P.progAt < 180e3) { P.sweepAt = Date.now(); continue; } /* 除錯：正式檢查 3 分鐘內剛讀過的不覆蓋（避免讀法不同把已賣完的又拉回快速名單、佔名額） */ let fp = null; if (P.soldSel) { /* 除錯 11/1：bibiai AGENT ID 用「已售／總量」才讀得到（已售 a2309ff8、總量 a0e23ebd），一般免費讀法讀不到 → 卡在 0% 兩小時沒回頭看，漲到 92% 都不知道 */ const sr = await call(c, P.soldSel); const sold = sr && sr.length >= 66 ? Number(BigInt(sr.slice(0, 66))) : null; if (sold > 0) { if (P.capSel === undefined) P.capSel = (await findCapSel(c, await fullCode(c, await codeOf(c)).catch(() => ''), sold).catch(() => '')) || ''; if (P.capSel) { const cr = await call(c, '0x' + P.capSel); const cap = cr && cr.length >= 66 ? Number(BigInt(cr.slice(0, 66))) : 0; if (cap >= sold && cap > 0) fp = sold / cap; } } }
       if (fp == null) fp = await freeProgress(c); P.sweepAt = Date.now(); if (fp != null && fp > 0) { if (fp >= 0.45 && (P.progress || 0) < 0.45 && !P.swLog) { P.swLog = 1; log(`進度掃描：${P.name || c} 進度 ${Math.round(fp * 100)}%，移到快速檢查`); } P.progress = fp >= 0.999 && !P.progAt ? 1 : Math.min(fp, 0.99); /* 審查 11/1：免費合約正式檢查不會讀進度，賣完的會永遠卡 99% 佔快速名單 → 直接記 100% */ /* 100% 交給快速檢查用正式讀法確認，避免讀錯就永遠不看 */ } } catch {} } }));
 }
+/* v3.1：①同名重发不打（同一个名字 24 小时内第 2 个合约起不铸）②免费铸造卡住就停（进度 3 小时没动，不再补铸、不排队）；设定里各有开关，预设开 */
+const baseNm = (n) => String(n || '').replace(/\s*[（(]\s*\$?[^)）]*[)）]\s*$/, '').replace(/^\$/, '').trim().toLowerCase();
+async function cloneStall(c, val = 0n) {
+  const set = radarSet(); const P = S.paid?.[c]; const now = Date.now();
+  if (Number(set['bsc.cloneSkip']) !== 0) {
+    let nm = P?.name || ''; if (!baseNm(nm) || /^(頻道項目|搜寻项目)$/.test(nm)) { if (P && P.nm == null) P.nm = tokStr(await call(c, '0x06fdde03').catch(() => '')) || ''; nm = P?.nm || nm; }
+    const b = baseNm(nm);
+    if (b.length >= 2) { S.nameSeen = S.nameSeen || {}; const m = (S.nameSeen[b] = S.nameSeen[b] || {}); if (!m[c]) m[c] = P?.at || now;
+      for (const [k, t] of Object.entries(m)) if (now - t > 172800e3) delete m[k];
+      const mine = m[c]; const earlier = Object.entries(m).filter(([k, t]) => k !== c && t < mine && mine - t < 86400e3).length;
+      if (earlier >= 1) return `同名「${b}」24 小时内已经出现过 ${earlier} 个合约（这是第 ${earlier + 1} 个，像在钓自动铸造）`; }
+  }
+  if (Number(set['bsc.stallSkip']) !== 0 && val === 0n && P && (P.progress || 0) > 0 && P.progress < 0.99) {
+    if (P._lp !== P.progress) { P._lp = P.progress; P.pMoveAt = now; }
+    if (P.pMoveAt && now - P.pMoveAt > 3 * 3600e3) return `免费铸造卡在 ${Math.floor(P.progress * 100)}% 超过 3 小时没动`;
+  }
+  return '';
+}
 async function autoMint(c, fname, W = WALLETS[0], val = 0n) {
   /* 使用者 10/31 19:21：新規則——不管免費還是付費，進度超過 50% 就打，之前的規矩（重複 DEV、黑名單、熱度、手續費上限…）全部不看；只保留貔貅類安全檢查（每筆都模擬、不能授權、不能扣到預期外的資產、Flap 禁止）。讀不到進度的才用熱度判斷 */
   { const sd = await serialDev(c); if (sd) { S.paid = S.paid || {}; if (S.paid[c]) { S.paid[c].serialLog = 1; S.paid[c].lastReason = sd + '，照規則不打'; } return `⛔ ${sd}，照規則不打`; } } /* 除錯 11/1：被「大量部署者」擋掉的，以前錯過名單會誤寫成「還沒找到能打的方式」 */
+  if (!FORCE.has(c)) { const ck = await cloneStall(c, val); if (ck) { if (S.paid?.[c]) S.paid[c].lastReason = ck + '，照规则不打'; return `⛔ ${ck}，照规则不打`; } }
   if (val > 0n) { /* 使用者 11/1 14:16：「付手續費的免費」一律當付費——今天被這種小項目掏了約 0.195 BNB；要付錢就必須有保本（退款）機制才打 */
     if (!(await walletLimit(c))) return `⏸ 要付 ${Number(val) / 1e18} BNB 手續費（當付費），但合約沒有每個錢包上限的規定，照規則不打`; /* 使用者 11/1 17:54 */
     if (await isNft(c).catch(() => false)) { const fpN = await freeProgress(c); const agN = S.paid?.[c]?.agents || 0; if (!(fpN >= Math.max(GO_PCT, 0.7)) || agN < Math.max(AG_MIN, 150)) return '⏸ NFT 要進度 70%、150 個錢包以上才打'; if (!(await walletLimit(c, true))) return '⏸ NFT 一定要有「每個錢包上限」，照規則不打'; const nw = await nftStrict(c); if (nw) return '⏸ ' + nw + '，照規則不打'; }
@@ -1029,7 +1075,7 @@ const RISK = { dayBnb: 0.01, freePerDay: 20, gasMax: 0.0003, gasMaxPaid: 0.001, 
 function riskDay() { const d = new Date().toDateString(); if (!S.risk || S.risk.d !== d) S.risk = { d, spend: {}, free: {}, warned: {}, rev: (S.risk && S.risk.rev) || {} }; return S.risk; }
 const UPG_SLOTS = ['0x360894a13ba1a3210667c828492db98dca3e2076cc3735a8ce03b6d4d6b6bbc', '0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50', '0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036a5a723fd8ee048ed3f8c3'];
 async function upgradeable(c) { /* 可升級代理合約：項目方事後能把程式（包括保本機制）整個換掉 */ S.upg = S.upg || {}; if (S.upg[c] != null) return !!S.upg[c]; let u = 0; for (const sl of UPG_SLOTS) { const v = await rpc('eth_getStorageAt', [c, sl, 'latest']).catch(() => null); if (v && /[1-9a-f]/i.test(v.slice(2))) { u = 1; break; } } S.upg[c] = u; return !!u; }
-async function drainCheck(c, valueWei, data = '') { /* 使用者 11/1 15:59：付費的錢要留在合約裡（開池當流動性／打不滿能退款）。模擬只看得到自己錢包的變化，所以改看合約裡實際剩多少 BNB：進度都 80% 了合約裡卻幾乎沒錢＝錢被轉走，退款是假的，不打 */
+async function drainCheck(c, valueWei, data = '') { if (Number(radarSet()['bsc.drainSkip']) === 0) return ''; /* 她 11/2 13:26：「钱被转走的不打」改成用户自己的开关（预设开） */ /* 使用者 11/1 15:59：付費的錢要留在合約裡（開池當流動性／打不滿能退款）。模擬只看得到自己錢包的變化，所以改看合約裡實際剩多少 BNB：進度都 80% 了合約裡卻幾乎沒錢＝錢被轉走，退款是假的，不打 */
   if (!(BigInt(valueWei || 0) > 0n)) return '';
   S.drainC = S.drainC || {}; const k = S.drainC[c]; if (k && Date.now() - k.t < 60e3) return k.r; /* 網友 AI 建議 11/1：快取從 10 分鐘縮到 1 分鐘，打之前等於重查 */
   let tok = ''; const tr = await call(c, '0xfc0c546a'); if (tr && tr.length >= 66 && BigInt(tr.slice(0, 66)) > 0n) tok = '0x' + tr.slice(26, 66);
@@ -1319,7 +1365,8 @@ async function radarOrders() {
   }
 }
 /* 她 11/2 04:39：「没卖成，看 log」看不懂 → 直接说原因 */
-function sellWhy(m) { m = String(m || ''); if (/insufficient liquidity|liquidity/i.test(m)) return '池子里几乎没钱了，没人接得住，卖不出去。这种币基本归零，放着不管就好（不会再扣你钱）'; if (/honeypot|transfer|TRANSFER_FROM_FAILED/i.test(m)) return '这个币不让卖（可能是貔貅或被限制转帐）'; if (/gas|insufficient funds|balance/i.test(m)) return '钱包的 BNB 不够付手续费，先转一点 BNB 进来'; if (/slippage|price impact/i.test(m)) return '价格跳太大（滑点），等一下再试或少卖一点'; return m ? '交易所回：' + m.slice(0, 120) : '没有拿到原因，等一下再试一次'; }
+function sellWhy(m) { m = String(m || ''); if (/insufficient liquidity|liquidity/i.test(m)) return '池子里几乎没钱了，没人接得住，卖不出去。这种币基本归零，放着不管就好（不会再扣你钱）'; if (/honeypot|transfer|TRANSFER_FROM_FAILED/i.test(m)) return '这个币不让卖（可能是貔貅或被限制转帐）'; if (/gas|insufficient funds|balance/i.test(m)) return '钱包里付手续费的币不够（BNB Chain 用 BNB、Robinhood 用 ETH），先转一点进来'; if (/slippage|price impact/i.test(m)) return '价格跳太大（滑点），等一下再试或少卖一点'; return m ? '交易所回：' + m.slice(0, 120) : '没有拿到原因，等一下再试一次'; }
+globalThis.sellWhy = sellWhy;
 
 /* 💡 用户反馈收件（11/2，只有 Nancy 的个人版会跑：要有 .sign/referral_bot.json）：用户私讯 @RobinCatRadar_bot → 存进 data/feedback.jsonl，雷达「更多 → 反馈收件箱」看；
    她 11/2 03:13「不要一直通知我」→ 不即时通知，每天 21:00 有新反馈才发一则摘要 */
@@ -1361,7 +1408,7 @@ setInterval(async () => { const q = join(DIR, 'data', 'radar_login_req.json'); i
   } catch (e) { writeFileSync(out, JSON.stringify({ state: 'fail', wallet: W.name, why: e.message.slice(0, 80), at: Date.now() })); } finally { _loginBusy = false; radarWalletPoll(); } }, 3e3).unref();
 const PAY_TOK = { BNB: NATIVE_BNB, USDT, USDC: '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d' };
 async function radarBalPoll() { try { const bp = await bnbUsd().catch(() => 0); const ep = RH?.ethUsd ? await RH.ethUsd().catch(() => 0) : 0; const w = [];
-  for (const W of WALLETS) { const b = { name: W.name, addr: W.addr, bsc: {}, rh: {} }; b.bsc.BNB = Number(big(await rpc('eth_getBalance', [W.addr, 'latest']).catch(() => '0x0'))) / 1e18; for (const k of ['USDT', 'USDC']) b.bsc[k] = Number(big(await call(PAY_TOK[k], '0x70a08231' + wa(W.addr)).catch(() => '0x0'))) / 1e18; if (RH?.ethBal) b.rh.ETH = await RH.ethBal(W.addr).catch(() => null); w.push(b); }
+  for (const W of WALLETS) { const b = { name: W.name, addr: W.addr, bsc: {}, rh: {} }; { const rd = async (fn) => { for (let i = 0; i < 3; i++) { const h = await fn().catch(() => null); if (h && /^0x[0-9a-f]+$/i.test(h)) return Number(big(h)) / 1e18; } return null; }; /* 她 11/2 05:16：节点没回应不能当成 0（走势图会掉一根） */ b.bsc.BNB = await rd(() => rpc('eth_getBalance', [W.addr, 'latest'])); for (const k of ['USDT', 'USDC']) b.bsc[k] = await rd(() => call(PAY_TOK[k], '0x70a08231' + wa(W.addr))); } if (RH?.ethBal) b.rh.ETH = await RH.ethBal(W.addr).catch(() => null); w.push(b); }
   S.curveVal = S.curveVal || {}; for (const t of (S.dyn || []).filter((x) => !x.closed && CURVES[x.addr])) { try { const W = WALLETS.find((x) => x.addr === t.only); if (!W) continue; const bal = big(await call(t.addr, '0x70a08231' + wa(W.addr))); S.curveVal[t.addr + ':' + t.only] = bal > 0n ? (Number(await curveQuote(t.addr, W, bal)) / 1e18) * bp : 0; } catch {} } /* 曲线上的币：用曲线报价算现值 */
   writeFileSync(join(DIR, 'data', 'radar_bal.json'), JSON.stringify({ at: Date.now(), bnbUsd: bp, ethUsd: ep, w, caps: { bscMint: PAID.maxUsd, bscTok: AGTOK.usd, rh: RH?.RHC?.usd ?? null, rhMint: RH?.RHC?.mintUsd ?? null, gasBnb: PAID.keepBnb } })); /* 每笔金额：给「钱包总览」算还够打几笔 */
   if (RH?.RHC && !radarOff() && ((RH.RHC.usd > 0) || RH.RHC.mintAuto) && ep > 0) { const low = w.filter((b) => b.rh.ETH != null && b.rh.ETH * ep < Math.max(RH.RHC.usd || 0, RH.RHC.mintUsd || 0) + 1); S.rhLowAt = S.rhLowAt || 0;
@@ -1536,7 +1583,7 @@ async function paidLoop(mode = 'all', shard = null) {
     try {
     P.lastTry = Date.now(); if (WALLETS.every((W) => P.done[W.name])) { if (FORCE.has(c)) { S.forceDone = S.forceDone || {}; S.forceDone[c] = 1; } delete S.paid[c]; continue; }
     if (Date.now() - P.at > PAID.maxAgeH * 3600e3) { delete S.paid[c]; continue; }
-    if (P.serialLog && !FORCE.has(c)) continue; /* v2.7.7：被「大量部署者」规则挡掉的不再重查（以前占掉九成快速检查名额，拖慢真正热门的项目）；规则本身不变 */
+    if (P.serialLog && !FORCE.has(c)) continue; if (!FORCE.has(c)) { const ck = await cloneStall(c).catch(() => ''); if (ck) { if (P.lastReason !== ck + '，照规则不打') { P.lastReason = ck + '，照规则不打'; log(`跳过 ${P.name || c}：${ck}`); } continue; } } /* v2.7.7：被「大量部署者」规则挡掉的不再重查（以前占掉九成快速检查名额，拖慢真正热门的项目）；规则本身不变 */
     const code = await codeOf(c);
     // 發現時還沒開的「免費」鑄造：之後每分鐘重試，一開就自動打
     const fcd = (P.progress || 0) >= GO_PCT - 0.02 || Math.max(P.agents || 0, HOT.get(c)?.from.size || 0) >= 70 ? 20e3 : 120e3; /* 除錯 11/1：快到 60% 的免費項目改成 20 秒重試一次（之前固定 2 分鐘，0xa69adf 在這 2 分鐘內從 63% 賣完） */
@@ -1888,7 +1935,7 @@ async function manualMints() {
     if (J.swapBack || J.approvals || J.revokeAll) await tgSay(`🛠 ${J.swapBack ? '換回 BNB' : '授權處理'} ${J.name || J.c || ''}\n${res.join('\n')}`);
     else { /* 使用者 11/1 03:42：手動補打不發個人 TG，改發大群（只說打了什麼，不寫金額和錢包） */
       const okAny = res.some((x) => x.includes('✅')); const c0 = String(J.c || '').toLowerCase(); S.grpOnce = S.grpOnce || {};
-      if (okAny && TG && GROUP_ID && c0 && !S.grpOnce[c0]) { S.grpOnce[c0] = Date.now(); save(); try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text: `📡 Agent ID 播报\n🛒 已铸造：${J.name || c0.slice(0, 10)}\n合约：${c0}`, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); log(`群播報: 手動補打 ${J.name || c0}`); } catch {} }
+      if (okAny && TG && GROUP_ID && c0 && !S.grpOnce[c0]) { S.grpOnce[c0] = Date.now(); save(); try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: GROUP_ID, text: safeOut(`📡 Agent ID 播报\n🛒 已铸造：${J.name || c0.slice(0, 10)}\n合约：${c0}`, 1), disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); log(`群播報: 手動補打 ${J.name || c0}`); } catch {} }
     }
   }
 }
@@ -1933,7 +1980,7 @@ async function doUpdate() {
 }
 async function groupInvite() { if (!UPD.on || S.grpInvited === 1) return; S.grpInvited = 1; save(); const msg = `👋 歡迎使用 Agent ID Sniper v${UPD.ver}\n加入官方 TG 群，第一時間收到：\n• 工具更新通知\n• 打到什麼項目、哪個開盤的即時播報\n• 使用教學與問題解答\n👉 ${UPD.group}`; log(msg.replace(/\n/g, ' | ')); console.log('\n' + '='.repeat(48) + '\n' + msg + '\n' + '='.repeat(48) + '\n'); await tgSay(msg); }
 if (UPD.on) setTimeout(() => { const b = join(DIR, 'data', 'update_backup.mjs'); if (existsSync(b)) { try { renameSync(b, join(DIR, 'data', 'backup_prev.mjs')); log('新版已穩定運行 10 分鐘，舊版備份改存為 data/backup_prev.mjs'); } catch {} } }, 10 * 60e3).unref();
-async function tgSay(text) { if (!TG) return; log('TG回覆: ' + text.replace(/\n/g, ' | ')); try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: TG.b, text, disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {} }
+async function tgSay(text) { if (!TG) return; log('TG回覆: ' + text.replace(/\n/g, ' | ')); try { await fetch(`https://api.telegram.org/bot${TG.a}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: TG.b, text: safeOut(text, 0), disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) }); } catch {} }
 function findTok(q, W) {
   q = q.toLowerCase();
   return TOKENS.concat(S.dyn || []).find((t) => (!t.only || t.only === W.addr) && (t.sym.toLowerCase() === q || t.addr === q));
@@ -2051,7 +2098,7 @@ async function main() {
     if (existsSync(join(DIR, 'WATCH_STOP'))) { log('WATCH_STOP，退出'); save(); process.exit(0); }
     try {
       const head = parseInt(await rpc('eth_blockNumber', []), 16);
-      const tS = Date.now(); await scanNew(head); if (Date.now() - tS > 20e3) log(`掃描一輪花了 ${Math.round((Date.now() - tS) / 1000)} 秒`);
+      const tS = Date.now(); try { await scanNew(head); } catch (e) { if (Date.now() - (globalThis._scanErrAt || 0) > 600e3) { globalThis._scanErrAt = Date.now(); log('掃描新合約：節點限流，這輪先略過（下一輪會補掃）' + String(e.message || '').slice(0, 60)); } } /* 11/2 自查：節點限流不能讓整輪後面的工作（熱門代幣、開盤偵測、付費檢查…）一起跳過 */ if (Date.now() - tS > 20e3) log(`掃描一輪花了 ${Math.round((Date.now() - tS) / 1000)} 秒`);
       if (!globalThis._agBusy && Date.now() - (globalThis._agAt || 0) > 60e3) { globalThis._agBusy = true; globalThis._agAt = Date.now(); agTokScan().catch((e) => log('agTok ' + e.message)).finally(() => { globalThis._agBusy = false; }); } /* 11/1 22:21：AI 熱門代幣每分鐘檢查 */
       if (!globalThis._openBusy && Date.now() - (globalThis._openAt || 0) > 15e3) { globalThis._openBusy = true; globalThis._openAt = Date.now(); openWatch(head).catch((e) => log('openWatch ' + e.message)).finally(() => { globalThis._openBusy = false; }); } /* v2.8.0：开盘侦测每 15 秒 */
       { const fast = Object.values(S.tokens).some((st) => st.openAt && Date.now() - st.openAt < RULE.fastMin * 60e3 && st.stage !== 9 && !st.done); const full = Date.now() - lastHold > 5000; if (!globalThis._holdBusy && full) { lastHold = Date.now(); globalThis._holdBusy = true; const tH = Date.now(); holdings(head, false).catch((e) => log('holdings ' + e.message)).finally(() => { globalThis._holdBusy = false; if (Date.now() - tH > 20e3) log(`持倉檢查花了 ${Math.round((Date.now() - tH) / 1000)} 秒`); }); } if (fast && !globalThis._fastBusy && Date.now() - (globalThis._fastAt || 0) > 15e3) { globalThis._fastBusy = true; globalThis._fastAt = Date.now(); holdings(head, true).catch((e) => log('holdings fast ' + e.message)).finally(() => { globalThis._fastBusy = false; }); } } /* v2.8.2：刚开盘 30 分钟内的币独立每 15 秒看价格，不再等完整检查跑完 */ /* 持倉檢查放背景，同時只跑一個，避免重複賣 */
@@ -2072,7 +2119,7 @@ async function main() {
       if (Date.now() - lastLogin > 600e3) { lastLogin = Date.now(); loginCheck().catch(() => {}); }
       lastLoopAt = Date.now(); save(); writeFileSync(join(DIR, 'data', 'watch_heartbeat.txt'), ts() + ' 掃描落後 ' + (S.scanLag ?? '?') + ' 塊 · 付費檢查一輪 ' + (globalThis._paidDur ?? '?') + ' 秒');
       if ((S.scanLag || 0) > 400 && Date.now() - (S.lagAlert || 0) > 3600e3) { S.lagAlert = Date.now(); await tg(`⚠️ 新合約掃描落後 ${S.scanLag} 個區塊（約 ${Math.round(S.scanLag * 0.45 / 60)} 分鐘），可能是公用節點變慢，手動處理`); }
-    } catch (e) { log('出错 ' + e.message); }
+    } catch (e) { log('出错 ' + e.message + ' @' + String(e.stack || '').split('\n').slice(1, 3).map((x) => x.trim().replace(/^at /, '').replace(/\(?file:.*?([^/\\]+\.mjs)/, '$1')).join(' < ').slice(0, 160)); }
     await sleep(1000);
   }
 }
