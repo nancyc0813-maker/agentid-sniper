@@ -42,7 +42,7 @@ export function startBscNft({ rpc, rpcBatch, WALLETS, log, tg, S, save, radarOff
     M.ok = !why.length; M.why = why.join('；') || '符合条件';
     if (M.ok && cf.auto && !radarOff() && !M.done) await mint(c, M, false);
   }
-  async function mint(c, M, manual, capU = 0) { if (!manual) { const cs = globalThis.CUSTOM_SKIP?.({ chain: 'bsc', type: 'nft', c, name: M.name || '', realBuyers: M.real ?? null }); if (cs) { M.why = '自订规则不打：' + cs; return '自订规则不打：' + cs; } } /* 她 11/2：「不打规则」也要管 BSC NFT */
+  async function mint(c, M, manual, capU = 0) {
     if (!M.tpl) return '没有可以照着做的铸造方式'; const cf = C(); const px = await bnbUsd().catch(() => 0); const out = []; M.done = M.done || {};
     for (const W of WALLETS) { if (M.done[W.addr]) continue; const sp = (N.day[day()] || {})[W.addr] || 0; if (!manual && sp + (M.costUsd || 0) > cf.dayUsd) { out.push(`[${W.name}] 今天额度用完`); continue; }
       const data = String(M.tpl.data).toLowerCase().split(M.tpl.from.slice(2)).join(W.addr.slice(2)); const val = BigInt(M.tpl.value); if (capU > 0 && px > 0 && (Number(val) / 1e18) * px > capU) { out.push(`[${W.name}] 一次要约 ${((Number(val) / 1e18) * px).toFixed(2)}U，超过你这次填的 ${capU}U，没铸`); continue; }

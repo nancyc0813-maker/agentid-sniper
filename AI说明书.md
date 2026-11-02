@@ -89,7 +89,7 @@ export async function tick(api) { ... }
 
 ## 三、加全新的功能（外挂）
 
-新策略（例如网格、定投、新的进场条件）写成外挂，放在 **`plugins/`** 资料夹。范本：`plugins/钱包总览.mjs`（只看不买的面板）。会花钱的外挂要用 api.buy／api.sell，有自己的每日额度，碰不到雷达打到的币。
+新策略（例如网格、定投、新的进场条件）写成外挂，放在 **`plugins/`** 资料夹。范本：`plugins/网格.mjs`、`plugins/定投.mjs`。
 
 外挂长这样：
 

@@ -44,13 +44,13 @@ export async function startPlugins(ctx) {
     let err = ''; ch.stderr?.on('data', (d) => { err += d; }); const to = setTimeout(() => { ch.kill(); rej(new Error('外挂启动逾时')); }, 15000);
     ch.once('message', (m) => { clearTimeout(to); if (m.t === 'meta') res({ ch, meta: m.meta }); else { ch.kill(); rej(new Error(m.err || '启动失败')); } });
     ch.once('exit', (c) => { clearTimeout(to); rej(new Error('外挂结束了 ' + (err.slice(-150) || c))); }); }); }
-  const okMap = rj(OK, {}); const OFFH = rj(join(DIR, 'radar', 'official.json'), {}).files || {}; const found = [], loaded = [];
+  const okMap = rj(OK, {}); const found = [], loaded = [];
   for (const f of existsSync(PD) ? readdirSync(PD).filter((x) => x.endsWith('.mjs')) : []) {
     const src = readFileSync(join(PD, f), 'utf8'); const hash = createHash('sha256').update(src).digest('hex');
     const doc = (src.match(/^\s*\/\/[^\n]*(\n\s*\/\/[^\n]*){0,6}/) || [''])[0].replace(/^\s*\/\/\s?/gm, '').trim().slice(0, 400);
     const bad = src.replace(/\/\/[^\n]*/g, '').match(BAD)?.[0] || '';
     const trades = /api\.(buy|sell|call|limitBuy|limitSell)\s*\(/.test(src);
-    const item = { file: f, hash, doc, trades, bad, approved: okMap[f] === hash || (!trades && OFFH['plugins/' + f] === hash), size: src.length }; /* 官方签过名、又不花钱的（钱包总览）不用再按允许 */
+    const item = { file: f, hash, doc, trades, bad, approved: okMap[f] === hash, size: src.length };
     found.push(item);
     if (bad) { log(`外挂 ${f} 用了不允许的东西（${bad}），不载入`); continue; }
     if (!item.approved) { log(`外挂 ${f} 还没在雷达按「允许」（或档案被改过），不载入`); continue; }
@@ -60,7 +60,7 @@ export async function startPlugins(ctx) {
   }
   // 给雷达「设定」页用：外挂清单＋每个外挂的设定项目
   const schemaItems = [], groups = [];
-  if (loaded.length) { groups.push({ id: 'plug._all', zh: '外挂 · 总额度与本金', en: 'Plugins · budget & funding' }); schemaItems.push({ k: 'plugins.base', g: 'plug._all', def: 0, min: 0, max: 2, opts: [{ v: 0, zh: 'USDT', en: 'USDT' }, { v: 1, zh: 'USDC', en: 'USDC' }, { v: 2, zh: 'FDUSD', en: 'FDUSD' }], zh: '用哪个稳定币去买', en: 'Pay with which stablecoin', dzh: '外挂用这个稳定币买，卖掉换回当初用的那个', den: 'Plugins buy with it and sell back to the same one' }); schemaItems.push({ k: 'plugins.slipCustom', g: 'plug._all', def: 5, min: 0.5, max: 50, unit: '%', zh: '你自己加的币：价格最多可以差多少', en: 'Custom tokens: max price slippage', dzh: '只影响你在「外挂可交易的币」自己加的币；BNB、ETH、稳定币不用管', den: 'Stables 0.3% and majors 1% are fixed; custom tokens use this' }); schemaItems.push({ k: 'plugins.dayUsd', g: 'plug._all', def: 100, min: 0, max: 1e9, unit: 'U', zh: '所有外挂每天合计最多', en: 'All plugins daily total', dzh: '全部外挂加起来每天最多花多少，自己决定', den: 'Your choice' }); }
+  if (loaded.length) { groups.push({ id: 'plug._all', zh: '外挂 · 总额度', en: 'Plugins · total budget' }); schemaItems.push({ k: 'plugins.base', g: 'plug._all', def: 0, min: 0, max: 2, zh: '本金用哪个稳定币（0=USDT，1=USDC，2=FDUSD）', en: 'Base stablecoin (0=USDT, 1=USDC, 2=FDUSD)', dzh: '外挂用这个稳定币买，卖掉换回当初用的那个', den: 'Plugins buy with it and sell back to the same one' }); schemaItems.push({ k: 'plugins.slipCustom', g: 'plug._all', def: 5, min: 0.5, max: 50, unit: '%', zh: '自选币滑点', en: 'Custom token slippage', dzh: '稳定币之间 0.3%、大币 1% 是固定的；你自己加的币用这个', den: 'Stables 0.3% and majors 1% are fixed; custom tokens use this' }); schemaItems.push({ k: 'plugins.dayUsd', g: 'plug._all', def: 100, min: 0, max: 1e9, unit: 'U', zh: '所有外挂每天合计最多', en: 'All plugins daily total', dzh: '全部外挂加起来每天最多花多少，自己决定', den: 'Your choice' }); }
   for (const L of loaded) { const id = L.m.meta.id; groups.push({ id: 'plug.' + id, zh: '外挂 · ' + (L.m.meta.name || id), en: 'Plugin · ' + (L.m.meta.nameEn || L.m.meta.name || id) });
     schemaItems.push({ k: `plug.${id}.on`, g: 'plug.' + id, def: 0, min: 0, max: 1, type: 'bool', zh: '启用', en: 'Enabled', dzh: L.m.meta.desc || '', den: L.m.meta.descEn || L.m.meta.desc || '' });
     schemaItems.push({ k: `plug.${id}.dayUsd`, g: 'plug.' + id, def: L.m.meta.dayUsd ?? 20, min: 0, max: 1e9, unit: 'U', zh: '每天最多花', en: 'Daily cap', dzh: '这个外挂每天买进的总上限（跟雷达分开算）', den: 'Separate from the radar budget' });
