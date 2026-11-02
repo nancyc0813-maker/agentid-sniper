@@ -1,6 +1,11 @@
-> ## 📦 此仓库仅作纪念，不再提供下载与更新
-> 这是罗宾猫雷达的旧版本（v3.0.0），保留在这里**只是留做纪念**，不再维护，也**请不要再下载使用**。
-> 新版请到：**https://github.com/nancyc0813-maker/robincat-sentinel**
+> ## ⛔ 此版本已停止维护，请勿下载使用 ｜ This version is discontinued — please do not download or use it
+> 这是罗宾猫雷达的**旧版本**（v3.0.0），只留作纪念：不再更新、不再修复，也**请不要再下载使用**。全新版本正在开发中，上线时会在官方渠道公布。
+>
+> This is an **old version** of RobinCat Radar (v3.0.0), kept here for the record only. It is no longer updated or fixed — **please do not download or use it**. A brand-new version is on the way and will be announced on the official channels.
+>
+> 📣 新版消息 ｜ New version updates：𝕏 **[@nancy_c813](https://x.com/nancy_c813)** ・ TG **[t.me/nancy_c0813](https://t.me/nancy_c0813)**
+>
+> ⚠️ 只认官方渠道公布的下载连结，其他来源都可能是假冒。｜ Only trust download links announced on the official channels — anything else may be fake.
 
 # 罗宾猫雷达（RobinCat Radar）v3.0.0
 
