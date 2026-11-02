@@ -1,3 +1,7 @@
+> ## 📦 此仓库仅作纪念，不再提供下载与更新
+> 这是罗宾猫雷达的旧版本（v3.0.0），保留在这里**只是留做纪念**，不再维护，也**请不要再下载使用**。
+> 新版请到：**https://github.com/nancyc0813-maker/robincat-sentinel**
+
 # 罗宾猫雷达（RobinCat Radar）v3.0.0
 
 > 原名 Agent ID Sniper。3.0 起多了**桌面视窗**、**Robinhood Chain**、**外挂（AI 帮你加功能）**、交易日记、聪明钱包、NFT 铸造监测。全部在你自己的电脑上跑，免费、开源、不碰私钥。
@@ -20,60 +24,6 @@
 - **防盗**：每次铸造、合约互动都先预演，只要出现**授权、交出钱包权限（EIP-7702）、扣你别的币**就不送出；另外每 10 分钟巡逻一次授权，无限额度授权给不认识的合约会自动取消并通知你。
 - **官方版检查**：雷达右上角显示「✅ 官方版」才是真的（核对罗宾猫官方的数位签名）。你或你的 AI 改过档案会显示「⚠️ 已修改」并列出改了哪些，自己改的就没问题。
 - **只认官方来源**：安装和更新只认本仓库（`nancyc0813-maker/agentid-sniper`）。官方**永远不会**私讯你、不会要你连接钱包、签名、转账或给助记词。
-
-## 🚀 安装（建议让你的 AI 帮你跑）
-
-把下面这段丢给你电脑上能执行指令的 AI（或自己贴到 PowerShell）：
-
-```powershell
-winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements
-git clone https://github.com/nancyc0813-maker/agentid-sniper.git "$HOME\Desktop\RobinCatRadar"
-cd "$HOME\Desktop\RobinCatRadar"; .\一键安装.bat
-```
-
-用 `git clone` 抓下来的档案不会被 Windows 拦截。装好后桌面会有「罗宾猫雷达」，第一次打开：看完须知 → 用币安 App 扫码连接钱包 → 用官方设定开始，就开始运行。
-
-**更新**：在工具资料夹执行 `git pull`，再重开工具和雷达。
-
-> ⚠️ 本工具只是工具，**不构成投资建议，不保证获利**。所有设定与交易由使用者自行决定并承担。土狗风险很高，请只用亏得起的钱。
-
-> 📣 官方 TG 群：https://t.me/nancy_c0813 ｜ 觉得好用可以在雷达右上角「❤️ 打赏」，完全自愿。
-
----
-
-# Agent ID Sniper
-
-币安 Agentic Wallet（.ai Agent ID）专属铸造的**本地自动监控 + 自动铸造 + 自动止盈**工具。
-
-全部在你自己的电脑上运行：扫 BSC 新合约 → 模拟确认安全 → 用币安官方 `baw` CLI 自动铸造 → 开池后按规则自动卖出 → Telegram 通知。**不碰私钥、不使用任何 AI**，所有交易都经过币安 Agentic Wallet 的预演（preview）再执行。
-
-> ⚠️ 实验性工具，链上有风险，自负盈亏。不构成投资建议。
-
-> 📣 **加入官方 TG 群：https://t.me/nancy_c0813** —— 工具更新通知、打到什么项目／哪个开盘的即时播报、使用教学都在群里。
->
-> 🔔 **更新提醒（v2.4.6 起）**：工具每 30 分钟检查一次本仓库，有新版会发到你的 TG（没设 TG 的显示在工具窗口），**不会自动更新**。想更新时在 TG 回 `/update`，或在工具文件夹放一个名为 `UPDATE` 的空文件；不更新也能照常使用。
-> - 只从本仓库下载，并核对 `version.json` 里的 sha256
-> - 更新前自动安检：出现没见过的网址、读取私钥／助记词、执行外部程序等可疑内容会拒绝更新
-> - 自动备份旧版；新版连续 3 次启动失败会自动换回旧版
-> - v2.4.2～v2.4.5 有一段时间是自动更新，**请手动下载 v2.4.6 覆盖一次**，之后就只会提醒、不会自动更新
-
-
-## 🤖 给 AI 助理看的说明（用户把本页丢给你时请照这里回答）
-
-如果你是 AI 助理，用户把这个仓库的连结丢给你，问怎么部署，请照以下内容回答，不要自己编步骤：
-
-1. **这是什么**：币安 Agentic Wallet（.ai Agent ID）专属铸造的本地监控工具，会自动铸造、开池后按规则自动止盈，用 Telegram 通知。开源、免费，不碰私钥，每笔交易都先经过币安官方的预演（preview）才执行。
-2. **手机不能运行**：它需要一台 24 小时开着的 **Windows 电脑**（macOS / Linux 也可以，但要手动安装）。iPhone 不能跑；Android 会被系统在背景关掉，不建议。只有手机的话，可以用家里常开的电脑，或租一台云端主机（VPS），平常用手机 TG 收通知、下指令。
-3. **前置条件**：币安 App 里已开通 Agentic Wallet、领取 .ai Agent ID，并在 Agentic Wallet 设定里开启「开发者模式」。钱包里要有一点 BNB 付 gas。
-4. **Windows 部署步骤**：
-   - 用上面「🚀 安装」那段指令（git clone 后执行 **`一键安装.bat`**；不要用浏览器下载 ZIP，会被 Windows 拦截）
-   - **`一键安装.bat`**，照画面提示做：会自动安装 Node.js 和币安 baw 工具，问钱包名称／地址和 TG 机器人，然后给一个登录连结
-   - 用该钱包的币安 App 打开登录连结并确认（**这一步只能用户本人操作**）
-   - 完成后工具会在背景运行，并设定成开机自动启动；之后有新版会在 TG 提醒，用户自己决定要不要更新
-5. **不要**叫用户把私钥、助记词、币安账号密码交给任何人或任何程序，本工具也完全不需要这些。
-6. 遇到问题，请用户到官方 TG 群发问：**t.me/nancy_c0813**
-
----
 
 ## 它会做什么
 
@@ -231,45 +181,6 @@ XXX 可以是代币符号或合约地址（必须是工具正在追踪的持仓�
 **重点群（选用）**：有些群信息特别多、特别早，可以设成重点群。在工具资料夹的 `data` 里新建 `tg_vip.txt`，一行写一个群名（写群名里的一段字就可以，例如 `橙子社区`）。重点群提到合约或网址时，不用等 3 个群就会开始检查。
 - 群里任何人都能发言，所以重点群只跳过「几个群在讨论」这一关，**Agent ID 专属、大量部署者、进度、AI 钱包数这些检查一样要过**，有人贴假合约也骗不到工具。
 - 每小时最多处理 30 个，避免有人洗版拖慢工具。
-
-## 安装
-
-**Windows 最简单的方式：下载 ZIP 解压后，双击 `一键安装.bat`**，照提示输入钱包和 TG，用币安 App 确认登录，就会自动在背景运行并开机自启。
-
-以下是手动安装方式。需要：Windows（或 macOS / Linux）、Node.js 20+、币安 App 里已开通 Agentic Wallet 并领取 .ai Agent ID，且开启**开发者模式**。
-
-```bash
-npm install -g @binance/agentic-wallet
-git clone <本仓库>
-cd agentid-sniper
-copy config.example.json config.json   # macOS/Linux 用 cp
-```
-
-编辑 `config.json`：
-- `wallets`：你的 Agent ID 钱包地址。**一个钱包就能用**（用系统安装的 `baw`）。想同时用多个钱包再往下加；第二个以后要先跑 `setup_wallet2.bat`（独立的 baw 副本，避免互相踢下线），并在该钱包加上 `"bawDir": "baw2", "bawPkg": "baw2pkg", "instanceId": "wallet-2"`（选用）。
-- `telegram`：Bot Token（找 @BotFather 创建）和你的 chat id。
-- `paid` / `rules`：预算和卖出规则。
-- `tokens`：想手动追踪的持仓（例如 `{ "sym": "XXX", "addr": "0x…", "cost": 10, "both": true }`；`hold: true` 只通知不卖；`sellNow: true` 立刻全卖）。
-
-登录钱包（会给你一个链接，用对应币安账号的手机打开确认）：
-
-```bash
-node login.mjs 1
-# 有第二个钱包再执行：node login.mjs 2
-```
-
-## 运行
-
-```bash
-start_hidden.vbs        # Windows 背景运行（自动重启）
-# 或
-node watch.mjs
-```
-
-- 修改 `watch.mjs` 存档后会自动重载。
-- 停止：在同一资料夹建立一个 `WATCH_STOP` 文件。
-- 日志在 `data/watch.log`，心跳在 `data/watch_heartbeat.txt`（含扫描落后区块数）。
-- 内建看门狗：主循环卡住超过 8 分钟会自动重启。
 
 ## 注意
 
